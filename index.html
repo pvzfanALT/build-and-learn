@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Build and Learn</title>
+  <link rel="stylesheet" href="styles.css?v=3">
+</head>
+<body>
+  <div id="game-shell">
+    <canvas id="game-canvas" aria-label="Build and Learn browser game"></canvas>
+    <div id="label-layer"></div>
+    <div id="damage-overlay"></div>
+    <div id="crosshair" class="hidden"></div>
+
+    <div id="hud" class="hidden">
+      <div id="top-left-controls" class="chrome-panel bevel-out">
+        <button id="menu-button" class="chrome-button" type="button">Menu</button>
+        <button id="players-button" class="chrome-button" type="button">Players</button>
+        <button id="backpack-button" class="chrome-button" type="button">Armory</button>
+        <button id="online-button" class="chrome-button" type="button">Online</button>
+      </div>
+
+      <div id="hint-bar" class="chrome-panel bevel-out">
+        Survive the endless waves. Use <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or arrows to move, <kbd></kbd>1</kbd>-<kbd>9</kbd> to equip, <kbd>B</kbd> for the Armory, and click in first person to lock the mouse.
+      </div>
+
+      <div id="chat-panel" class="chat-panel">
+        <div id="chat-log"></div>
+      </div>
+
+      <div id="chat-entry" class="chrome-panel bevel-out hidden">
+        <span class="chat-prompt">Chat:</span>
+        <input id="chat-input" type="text" maxlength="80" autocomplete="off" spellcheck="false">
+      </div>
+
+      <div id="score-panel" class="chrome-panel bevel-out">
+        <div class="panel-heading">Survivors</div>
+        <table id="score-table">
+          <thead>
+            <tr>
+              <th>Player</th>
+              <th>Kills</th>
+              <th>Downs</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div id="health-panel" class="chrome-panel bevel-out">
+        <div class="panel-heading">Health</div>
+        <div class="health-track bevel-in">
+          <div id="health-fill"></div>
+        </div>
+        <div id="health-text">100 / 100</div>
+      </div>
+
+      <div id="hotbar" class="chrome-panel bevel-out"></div>
+
+      <div id="zombie-class-panel" class="zombie-class-panel hidden">
+        <div class="zcp-title">Transform</div>
+        <div id="zombie-class-grid" class="zcp-grid"></div>
+        <div id="zombie-class-cooldown" class="zcp-cooldown"></div>
+      </div>
+
+      <div id="victory-banner" class="victory-banner hidden"></div>
+
+      <div id="weapon-select-window" class="weapon-select-window hidden">
+        <div class="wsw-header">
+          <span class="wsw-title">Choose Your Loadout</span>
+          <span id="wsw-timer" class="wsw-timer"></span>
+        </div>
+        <div class="wsw-copy">Pick up to <strong>3</strong> weapons to survive the round. Zombies release soon!</div>
+        <div id="weapon-select-grid" class="wsw-grid"></div>
+        <div class="wsw-footer">
+          <span id="wsw-count" class="wsw-count">0 / 3 chosen</span>
+          <button id="weapon-select-confirm" class="chrome-button wide-button" type="button">Deploy</button>
+        </div>
+      </div>
+
+      <div id="status-strip" class="chrome-panel bevel-out">
+        <span id="place-name">Zombie Survival</span>
+        <span class="status-dot"></span>
+        <span id="server-name">Solo Session</span>
+      </div>
+
+      <div id="camera-controls" class="chrome-panel bevel-out">
+        <button class="chrome-button camera-button" data-camera="tilt-up" type="button">˄</button>
+        <button class="chrome-button camera-button" data-camera="zoom-in" type="button">+</button>
+        <button class="chrome-button camera-button" data-camera="tilt-down" type="button">˅</button>
+        <button class="chrome-button camera-button" data-camera="zoom-out" type="button">−</button>
+      </div>
+
+      <div id="menu-window" class="window chrome-panel bevel-out hidden">
+        <div class="window-title">Zombie Survival</div>
+        <button id="resume-button" class="chrome-button wide-button" type="button">Resume</button>
+        <button id="reset-button" class="chrome-button wide-button" type="button">Restart / Give Up</button>
+        <button id="fullscreen-button" class="chrome-button wide-button" type="button">Fullscreen</button>
+        <button id="debug-menu-button" class="chrome-button wide-button hidden" type="button">Debug Tools</button>
+        <label class="menu-toggle">
+          <input id="shiftlock-toggle" type="checkbox">
+          <span>Shift Lock &mdash; when on, tap <kbd>Shift</kbd> in-game to lock the camera to your aim, Roblox-style.</span>
+        </label>
+      </div>
+
+      <div id="debug-window" class="window chrome-panel bevel-out hidden">
+        <div class="window-title">Debug Tools</div>
+        <div class="debug-copy">Solo-only developer tools. Have fun, but nothing here works online.</div>
+        <div class="debug-row">
+          <select id="debug-enemy-select" class="debug-select"></select>
+          <button id="debug-spawn-button" class="chrome-button" type="button">Spawn Enemy</button>
+        </div>
+        <button id="debug-all-weapons-button" class="chrome-button wide-button" type="button">Give All Weapons</button>
+        <button id="debug-clear-enemies-button" class="chrome-button wide-button" type="button">Clear All Enemies</button>
+        <label class="menu-toggle">
+          <input id="debug-no-waves-toggle" type="checkbox">
+          <span>Disable wave spawning (spawn your own to test)</span>
+        </label>
+        <label class="menu-toggle">
+          <input id="debug-freeze-toggle" type="checkbox">
+          <span>Freeze enemy AI (no moving or thinking)</span>
+        </label>
+        <label class="menu-toggle">
+          <input id="debug-infinite-hp-toggle" type="checkbox">
+          <span>Infinite HP (you take no damage)</span>
+        </label>
+        <label class="menu-toggle">
+          <input id="debug-fly-toggle" type="checkbox">
+          <span>Fly &mdash; <kbd>Space</kbd> up, <kbd>C</kbd> down, WASD to move</span>
+        </label>
+        <button id="close-debug-button" class="chrome-button wide-button" type="button">Close</button>
+      </div>
+
+      <div id="backpack-window" class="window chrome-panel bevel-out hidden">
+        <div class="window-title">Armory</div>
+        <div class="backpack-copy">Run weapons unlock during each round. VIP gear stays unlocked until you leave this session.</div>
+        <div class="backpack-list"></div>
+        <div id="tool-description" class="tool-description bevel-in">
+          Starter weapon: Pistol. Survive waves to unlock more gear.
+        </div>
+      </div>
+
+      <div id="network-window" class="window chrome-panel bevel-out hidden">
+        <div class="window-title">Online Multiplayer</div>
+        <div id="network-role-line" class="network-role-line">Mode: Solo</div>
+        <div id="network-status" class="network-status bevel-in">Offline</div>
+        <div class="network-copy">
+          This uses direct browser-to-browser WebRTC. There is no dedicated public game server, but wider internet mode may still use public STUN for address discovery.
+        </div>
+
+        <div id="host-controls" class="network-section hidden">
+          <button id="create-invite-button" class="chrome-button wide-button" type="button">Create Invite Code</button>
+          <label class="network-label" for="host-offer-output">Invite code</label>
+          <textarea id="host-offer-output" class="network-textarea" readonly></textarea>
+          <div class="network-actions">
+            <button id="copy-host-offer-button" class="chrome-button" type="button">Copy Invite</button>
+            <button id="clear-host-offer-button" class="chrome-button" type="button">Clear Invite</button>
+          </div>
+          <label class="network-label" for="host-answer-input">Paste joiner answer</label>
+          <textarea id="host-answer-input" class="network-textarea"></textarea>
+          <div class="network-actions">
+            <button id="complete-join-button" class="chrome-button" type="button">Complete Join</button>
+            <button id="clear-host-answer-button" class="chrome-button" type="button">Clear Answer</button>
+          </div>
+          <div class="network-label">Connected players</div>
+          <div id="connected-players" class="connected-players bevel-in">No one connected yet.</div>
+        </div>
+
+        <div id="join-controls" class="network-section hidden">
+          <label class="network-label" for="join-offer-input">Paste host invite</label>
+          <textarea id="join-offer-input" class="network-textarea"></textarea>
+          <div class="network-actions">
+            <button id="generate-answer-button" class="chrome-button" type="button">Generate Answer</button>
+            <button id="clear-join-offer-button" class="chrome-button" type="button">Clear Invite</button>
+          </div>
+          <label class="network-label" for="join-answer-output">Your answer code</label>
+          <textarea id="join-answer-output" class="network-textarea" readonly></textarea>
+          <div class="network-actions">
+            <button id="copy-join-answer-button" class="chrome-button" type="button">Copy Answer</button>
+            <button id="clear-join-answer-button" class="chrome-button" type="button">Clear Answer</button>
+          </div>
+        </div>
+
+        <button id="close-network-button" class="chrome-button wide-button" type="button">Close</button>
+      </div>
+    </div>
+
+    <div id="studio-screen" class="hidden"></div>
+
+    <div id="loading-screen">
+      <div class="loading-card chrome-panel bevel-out">
+        <div class="loading-logo">BUILD AND LEARN</div>
+        <div id="loading-subtitle" class="loading-subtitle">Connecting to session...</div>
+        <div class="loading-track bevel-in">
+          <div id="loading-fill"></div>
+        </div>
+        <ul id="loading-steps" class="loading-steps">
+          <li class="active">Connecting to session</li>
+          <li>Receiving arena data</li>
+          <li>Building survival arena</li>
+          <li>Launching zombie survival</li>
+        </ul>
+
+        <div id="boot-actions" class="hidden">
+          <label class="boot-field" for="player-name-input">
+            <span class="boot-label">Name</span>
+            <input id="player-name-input" type="text" maxlength="18" value="Player" autocomplete="nickname" spellcheck="false">
+          </label>
+          <div class="boot-label">Preset Avatar</div>
+          <div id="avatar-preset-picker" class="avatar-preset-picker">
+            <button class="chrome-button avatar-preset-button active" data-avatar-preset="regular" type="button">
+              <strong>Regular</strong>
+              <span>Noob style starter avatar</span>
+            </button>
+            <button class="chrome-button avatar-preset-button" data-avatar-preset="doctor" type="button">
+              <strong>Doctor</strong>
+              <span>Medical mask and gloves</span>
+            </button>
+            <button class="chrome-button avatar-preset-button" data-avatar-preset="police" type="button">
+              <strong>Police Man</strong>
+              <span>Police hat preset</span>
+            </button>
+            <button class="chrome-button avatar-preset-button" data-avatar-preset="custom" type="button">
+              <strong>Custom ✦</strong>
+              <span>Equip your own items</span>
+            </button>
+          </div>
+          <div id="avatar-preset-description" class="boot-note avatar-preset-description">
+            Regular: the starter noob-style builder preset.
+          </div>
+          <div id="custom-avatar-panel" class="custom-avatar-panel hidden">
+            <div class="boot-label">Customize (one per slot)</div>
+            <div id="custom-avatar-slots" class="custom-avatar-slots"></div>
+          </div>
+          <label class="boot-toggle">
+            <input id="direct-mode-toggle" type="checkbox">
+            Strict direct mode: no public STUN, best for LAN/direct links only
+          </label>
+
+          <div class="boot-label">Choose a Game</div>
+          <div id="game-picker" class="game-picker">
+            <button class="game-card active" data-game="zombie" type="button">
+              <span class="game-icon">🧟</span>
+              <strong>Zombie Versus</strong>
+              <span>Infection — humans vs zombies</span>
+            </button>
+            <button class="game-card" data-game="crossroads" type="button">
+              <span class="game-icon">🎯</span>
+              <strong>Crossroads</strong>
+              <span>PvP arena shooter</span>
+            </button>
+          </div>
+
+          <div class="boot-button-row">
+            <button id="solo-button" class="chrome-button wide-button" type="button">Play Solo</button>
+            <button id="host-button" class="chrome-button wide-button" type="button">Host Online</button>
+            <button id="join-button" class="chrome-button wide-button" type="button">Join Online</button>
+          </div>
+          <div class="boot-note">
+            Play, host or edit the selected game. Host/Join uses manual private invite codes so no public game server is required.
+          </div>
+          <button id="studio-button" class="chrome-button wide-button" type="button">🛠 Studio (Edit Selected Game)</button>
+          <div class="boot-note">Studio lets you edit a throwaway copy of the selected game — models, stats, map and weapons. Nothing here changes the real game; save/load stays inside Studio.</div>
+          <button id="debug-enable-button" class="chrome-button wide-button" type="button">Debug: Off</button>
+          <div id="debug-boot-note" class="boot-note debug-boot-note">
+            ⚠ Debug tools are meant for developers/testing. They only work in <strong>Play Solo</strong> so online games stay fair. Click to enable, then use the Debug button in the in-game menu.
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="music-data.js?v=1"></script>
+  <script src="script.js?v=23"></script>
+</body>
+</html>

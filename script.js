@@ -3957,11 +3957,12 @@ allocatePlayerSpawn(index) {
           target.ashDeath = 0;
         }
         this.audio.playDeath();
-        if (target.isLocal) {
-          this.infectLocal();
-        } else if (target.isBot) {
-          this.infectHumanBot(target);
-        }
+if (target.isLocal) {
+  this.infectLocal();
+} else {
+  // infectHumanBot works perfectly for remote human players too!
+  this.infectHumanBot(target); 
+}
         return;
       }
 
@@ -4182,7 +4183,7 @@ allocatePlayerSpawn(index) {
       this.projectiles = [];
       const local = this.localCharacter;
       // Everyone starts as a candidate; pick who is a zombie.
-      const humans = [local, ...this.vs.bots.filter(Boolean)].filter(Boolean);
+      const humans = [...this.characters.values()].filter(Boolean);
       const total = humans.length;
       const zombieCount = Math.max(1, Math.floor(total / 3));
       const shuffled = shuffleArray(humans.slice());
@@ -4203,11 +4204,15 @@ allocatePlayerSpawn(index) {
       let zi = 0;
       for (const person of humans) {
         if (startingZombies.has(person)) {
-          if (person === local) {
-            this.makeLocalZombie(local, zombieSpawn(zi, zombieCount));
-          } else {
-            this.convertBotToZombie(person, zombieSpawn(zi, zombieCount));
-          }
+if (person.isLocal) {
+  this.makeLocalZombie(person, zombieSpawn(zi, zombieCount));
+} else if (person.isBot) {
+  this.convertBotToZombie(person, zombieSpawn(zi, zombieCount));
+} else {
+  // Remote players just need their stats and role updated, not a bot replacement
+  this.infectHumanBot(person); 
+  person.pos = zombieSpawn(zi, zombieCount);
+}
           zi += 1;
         } else {
           this.restoreHumanForm(person);
@@ -4541,15 +4546,13 @@ allocatePlayerSpawn(index) {
       person.dead = false;
     }
 
-    countVersusHumans() {
-      const local = this.localCharacter;
-      let count = 0;
-      if (local && local.vsRole !== 'zombie' && !local.dead) count += 1;
-      for (const bot of this.vs.bots) {
-        if (bot.vsRole !== 'zombie' && !bot.dead) count += 1;
-      }
-      return count;
-    }
+countVersusHumans() {
+  let count = 0;
+  for (const character of this.characters.values()) {
+    if (character.vsRole !== 'zombie' && !character.dead) count += 1;
+  }
+  return count;
+}
 
     endVersusRound(result, winner) {
       if (this.vs.phase === 'roundend') {
@@ -4823,11 +4826,11 @@ allocatePlayerSpawn(index) {
       const cls = VERSUS_ZOMBIE_CLASSES[local.vsClass] || VERSUS_ZOMBIE_CLASSES.normal;
       const forward = yawForward(local.yaw);
       let landed = false;
-      for (const bot of [...this.vs.bots]) {
-        if (bot.vsRole === 'zombie' || bot.dead) {
-          continue;
-        }
-        const to = vSub(bot.pos, local.pos);
+for (const bot of this.characters.values()) {
+  if (bot.id === local.id || bot.vsRole === 'zombie' || bot.dead) {
+    continue;
+  }
+  const to = vSub(bot.pos, local.pos);
         if (vLength(to) < 4.6 && vDot(vNormalizeXZ(to), forward) > 0.2) {
           if (bot.forcefield > 0) {
             continue;
@@ -4926,10 +4929,7 @@ allocatePlayerSpawn(index) {
       // All zombie threats a human should flee/shoot: model zombies + infected-avatar bots + local zombie.
       const zombieThreats = [...allZombies, ...this.vs.bots.filter((b) => b.vsRole === 'zombie' && !b.dead)];
       if (localZombie) zombieThreats.push(localZombie);
-      const humanTargets = [
-        ...(local && local.vsRole !== 'zombie' && !local.dead ? [local] : []),
-        ...this.vs.bots.filter((b) => b.vsRole !== 'zombie' && !b.dead)
-      ];
+const humanTargets = [...this.characters.values()].filter(c => c.vsRole !== 'zombie' && !c.dead);
 
       for (const bot of this.vs.bots) {
         if (bot.dead) {

@@ -175,6 +175,7 @@
   const STORAGE_KEYS = {
     playerName: 'build-and-learn-name',
     avatarPreset: 'build-and-learn-avatar-preset',
+    gender: 'build-and-learn-gender',
     shiftLock: 'build-and-learn-shiftlock',
     customAvatar: 'build-and-learn-custom-avatar'
   };
@@ -846,6 +847,7 @@
   let loadProgress = 0;
   let loadStep = 0;
   let selectedAvatarPreset = DEFAULT_AVATAR_PRESET;
+  let selectedGender = 'boy';
   let debugRequested = false;
   let studio = null;
   let activeStudioProject = null;
@@ -906,6 +908,18 @@
     dom.playerNameInput.value = localStorage.getItem(STORAGE_KEYS.playerName) || 'Player';
     selectedAvatarPreset = normalizeAvatarPresetKey(localStorage.getItem(STORAGE_KEYS.avatarPreset));
     updateBootAvatarPresetUi();
+
+    selectedGender = localStorage.getItem(STORAGE_KEYS.gender) === 'girl' ? 'girl' : 'boy';
+    const genderButtons = Array.from(document.querySelectorAll('#gender-picker [data-gender]'));
+    const syncGenderUi = () => genderButtons.forEach((b) => b.classList.toggle('active', b.dataset.gender === selectedGender));
+    syncGenderUi();
+    genderButtons.forEach((button) => {
+      button.addEventListener('click', () => {
+        selectedGender = button.dataset.gender === 'girl' ? 'girl' : 'boy';
+        localStorage.setItem(STORAGE_KEYS.gender, selectedGender);
+        syncGenderUi();
+      });
+    });
 
     dom.avatarPresetButtons.forEach((button) => {
       button.addEventListener('click', () => {
@@ -1021,14 +1035,17 @@
 
     const playerName = sanitizeName(dom.playerNameInput.value);
     const avatarPreset = normalizeAvatarPresetKey(selectedAvatarPreset);
+    const gender = selectedGender === 'girl' ? 'girl' : 'boy';
     localStorage.setItem(STORAGE_KEYS.playerName, playerName);
     localStorage.setItem(STORAGE_KEYS.avatarPreset, avatarPreset);
+    localStorage.setItem(STORAGE_KEYS.gender, gender);
 
     try {
       game = new ClassicOnlineReplica(dom, {
         mode,
         playerName,
         avatarPreset,
+        gender,
         debug: debugRequested || Boolean(extra.studioProject),
         worldBlocks: extra.worldBlocks || null,
         studioProject: extra.studioProject || null,
@@ -1037,6 +1054,7 @@
       });
       dom.loadingScreen.classList.add('hidden');
       dom.hud.classList.remove('hidden');
+      window.__game = game;
       game.start();
       if (extra.studioProject) {
         game.runStudioScripts('onStart');
@@ -1195,6 +1213,7 @@ this.localPlayer = this.createPlayerCharacter({
   name: options.playerName,
   spawn: vCopy(this.world.playerSpawns[0] || v3(0, 60, 0)),
   avatarPreset: options.avatarPreset,
+  gender: options.gender,
   isLocal: true
 });
 this.addCharacter(this.localPlayer);
@@ -1492,12 +1511,13 @@ this.addCharacter(this.localPlayer);
       this.dom.crosshair.classList.toggle('hidden', !show);
     }
 
-    createPlayerCharacter({ id, name, spawn, avatarPreset, isLocal }) {
+    createPlayerCharacter({ id, name, spawn, avatarPreset, isLocal, gender }) {
       const character = createCharacter({
         id,
         name,
         spawn,
         avatarPreset,
+        gender,
         isLocal,
         kind: 'player',
         team: 'human',
@@ -1519,6 +1539,7 @@ this.addCharacter(this.localPlayer);
         name: sanitizeName(playerData.name),
         spawn,
         avatarPreset: playerData.avatarPreset,
+        gender: playerData.gender,
         isLocal: false
       });
       character.connectionKey = connectionKey || null;
@@ -2037,26 +2058,10 @@ allocatePlayerSpawn(index) {
     }
 
     setupNetworkUi() {
-      // Public-server picker (all players must match to see each other).
-      if (this.dom.brokerSelect) {
-        this.dom.brokerSelect.textContent = '';
-        for (const b of PUBLIC_BROKERS) {
-          const opt = document.createElement('option');
-          opt.value = b.url;
-          opt.textContent = b.name;
-          this.dom.brokerSelect.appendChild(opt);
-        }
-        this.dom.brokerSelect.value = this.network.brokerUrl;
-        this.dom.brokerSelect.addEventListener('change', () => {
-          this.network.setBrokerUrl(this.dom.brokerSelect.value);
-          // Reconnect on the new broker for the current role.
-          this.network.leave();
-          if (this.mode === 'host') {
-            this.network.startHosting({ name: `${this.localCharacter.name}'s Zombie Versus`, host: this.localCharacter.name, map: 'Zombie Versus' });
-          } else if (this.mode === 'client') {
-            this.startServerBrowser();
-          }
-        });
+      // Single public server (HiveMQ) — hide the picker; everyone is always on the same one.
+      const brokerRow = document.querySelector('.network-broker-row');
+      if (brokerRow) {
+        brokerRow.classList.add('hidden');
       }
       if (this.dom.refreshServersButton) {
         this.dom.refreshServersButton.addEventListener('click', () => this.renderServerList());
@@ -2129,11 +2134,9 @@ allocatePlayerSpawn(index) {
           return;
         }
 
-        if (event.key === '/') {
+        if ((event.key === '/' || event.key === 'Enter') && !typing) {
           event.preventDefault();
-          if (!typing) {
-            this.openChatEntry();
-          }
+          this.openChatEntry();
           return;
         }
 
@@ -5075,13 +5078,13 @@ for (const bot of this.characters.values()) {
         }
         return;
       }
-      const local = this.localCharacter;
       const allZombies = [...this.zombies.values()].filter((z) => !z.dead);
-      const localZombie = local && local.vsRole === 'zombie' ? local : null;
-      // All zombie threats a human should flee/shoot: model zombies + infected-avatar bots + local zombie.
-      const zombieThreats = [...allZombies, ...this.vs.bots.filter((b) => b.vsRole === 'zombie' && !b.dead)];
-      if (localZombie) zombieThreats.push(localZombie);
-const humanTargets = [...this.characters.values()].filter(c => c.vsRole !== 'zombie' && !c.dead);
+      // Every zombie a human should flee/shoot AND every human a zombie should hunt — built
+      // from ALL characters (local host, joined online players, bots) so joiners are full
+      // participants on both sides, plus the zombie-kind model enemies.
+      const playerZombies = [...this.characters.values()].filter((c) => c.vsRole === 'zombie' && !c.dead);
+      const zombieThreats = [...allZombies, ...playerZombies];
+      const humanTargets = [...this.characters.values()].filter((c) => c.vsRole !== 'zombie' && !c.dead);
 
       for (const bot of this.vs.bots) {
         if (bot.dead) {
@@ -6286,6 +6289,7 @@ pickZombieSpawn() {
       character.connectionKey = connectionKey;
       character.name = sanitizeName(playerData.name);
       character.avatarPreset = normalizeAvatarPresetKey(playerData.avatarPreset);
+      character.gender = playerData.gender === 'girl' ? 'girl' : 'boy';
       character.bodyColors = cloneBodyColors(getAvatarPreset(character.avatarPreset).bodyColors);
       this.resetCharacterForNewRun(character, this.allocatePlayerSpawn(this.characters.size - 1));
       character.initializedFromNetwork = true;
@@ -6438,6 +6442,7 @@ pickZombieSpawn() {
               local.vsRole = playerData.vsRole || 'human';
               local.vsClass = playerData.vsClass || null;
               local.infected = Boolean(playerData.infected);
+              if (playerData.gender) local.gender = playerData.gender;
               local.renderScale = playerData.renderScale || 1;
               // First moment we learn we've been infected: flip UI to claws + class panel.
               if (!wasZombie && local.vsRole === 'zombie') {
@@ -6481,6 +6486,7 @@ pickZombieSpawn() {
           character.vsRole = playerData.vsRole || 'human';
           character.vsClass = playerData.vsClass || null;
           character.infected = Boolean(playerData.infected);
+          if (playerData.gender) character.gender = playerData.gender;
           character.renderScale = playerData.renderScale || 1;
         }
         character.netTarget = playerData;
@@ -6614,6 +6620,14 @@ pickZombieSpawn() {
       local.bodyColors = cloneBodyColors(auth.bodyColors);
       local.maxHealth = auth.maxHealth;
       local.forcefield = auth.forcefield;
+      // Hit feedback: the host owns damage, so the client never runs applyDamage and would
+      // otherwise get NO flash/sound when clawed — making it feel like "I take no damage".
+      // Detect the synced health dropping and fire the same feedback here.
+      if (auth.health < local.health - 0.5 && !auth.dead) {
+        this.dom.damageOverlay.style.opacity = '0.6';
+        local.damageFlash = Math.min(0.9, (local.damageFlash || 0) + 0.6);
+        if (this.audio && this.audio.playHit) this.audio.playHit();
+      }
       local.health = auth.health;
       local.toolCooldown = auth.toolCooldown || 0;
       local.slowTimer = auth.slowTimer || 0;
@@ -6682,21 +6696,15 @@ pickZombieSpawn() {
   //  browse a live server list and join — no codes, no NAT/TURN.
   // ============================================================
 
+  // HiveMQ's public broker only — it's the most reliable of the free public relays, so the
+  // whole game uses it (everyone is guaranteed to be on the same server, no picking).
   const PUBLIC_BROKERS = [
-    { name: 'EMQX (public)', url: 'wss://broker.emqx.io:8084/mqtt' },
-    { name: 'HiveMQ (public)', url: 'wss://broker.hivemq.com:8884/mqtt' },
-    { name: 'Mosquitto (public)', url: 'wss://test.mosquitto.org:8081/mqtt' }
+    { name: 'HiveMQ (public)', url: 'wss://broker.hivemq.com:8884/mqtt' }
   ];
   // Bump the realm string if the wire protocol ever changes so old clients don't mix in.
   const NET_REALM = 'bnlzv1';
 
   function loadPreferredBroker() {
-    try {
-      const saved = localStorage.getItem('build-and-learn-broker');
-      if (saved && PUBLIC_BROKERS.some((b) => b.url === saved)) {
-        return saved;
-      }
-    } catch (error) { /* ignore */ }
     return PUBLIC_BROKERS[0].url;
   }
 
@@ -7036,7 +7044,8 @@ pickZombieSpawn() {
         const character = this.game.characters.get(from);
         const speaker = character ? character.name : 'Player';
         this.game.receiveRemoteSpeech(from, speaker, msg.message);
-        this.downPublish({ type: 'chat', playerId: from, speaker, message: msg.message });
+        // Relay to everyone else, but exclude the sender so they don't see their own line twice.
+        this.downPublish({ type: 'chat', playerId: from, speaker, message: msg.message, except: from });
       } else if (msg.type === 'bye') {
         this.peers.delete(from);
         this.game.onPeerLeft(from);
@@ -7083,7 +7092,8 @@ pickZombieSpawn() {
           player: {
             id: this.game.localPlayerId,
             name: this.game.localCharacter.name,
-            avatarPreset: this.game.localCharacter.avatarPreset
+            avatarPreset: this.game.localCharacter.avatarPreset,
+            gender: this.game.localCharacter.gender
           }
         });
         tries += 1;
@@ -7792,6 +7802,7 @@ pickZombieSpawn() {
       team: options.team || 'human',
       isLocal: Boolean(options.isLocal),
       avatarPreset,
+      gender: options.gender === 'girl' ? 'girl' : 'boy',
       noFace: Boolean(options.noFace),
       hiddenLabel: Boolean(options.hiddenLabel),
       renderScale: options.renderScale || 1,
@@ -8143,6 +8154,10 @@ pickZombieSpawn() {
       if (!noLegs) {
         addLimb(triBuilder, lineBuilder, pose.leftLegJoint, pose.leftLegRot, yaw, colors.legs, scale);
         addLimb(triBuilder, lineBuilder, pose.rightLegJoint, pose.rightLegRot, yaw, colors.legs, scale);
+      }
+      // A girl avatar gets hair + a skirt, and keeps them (greenified) when infected.
+      if (character.kind === 'player' && character.gender === 'girl') {
+        renderGirlFeatures(triBuilder, lineBuilder, character, pose, yaw, scale, colors, infected);
       }
       if (infected) {
         // Infected keep their hats/masks/gloves etc. but gain a zombie face + claws.
@@ -8544,6 +8559,16 @@ pickZombieSpawn() {
   function addHeldCola(triBuilder, lineBuilder, pose, yaw, scale) {
     const hand = transformJointLocal(pose.rightArmJoint, yaw, pose.rightArmRot, v3(0.06 * scale, -1.62 * scale, 0.34 * scale));
     appendCylinder(triBuilder, hand, 0.2 * scale, 0.72 * scale, COLORS.canRed, v3(pose.rightArmRot, yaw, 0), 8);
+  }
+
+  // Feminine avatar overlay: flowing hair + a skirt. Additive over the standard skeleton so
+  // every accessory (hats, masks, gloves, etc.) still fits, and it carries onto the zombie
+  // body too (greenified hair) when a girl is infected.
+  function renderGirlFeatures(triBuilder, lineBuilder, character, pose, yaw, scale, colors, infected) {
+    const root = character.pos;
+    const skirt = colors.torso;
+    addBodyBox(triBuilder, lineBuilder, root, yaw, scaleBox({ x: -1.05, y: 1.55, z: -0.7 }, scale), scaleBox({ x: 1.05, y: 2.35, z: 0.7 }, scale), skirt, false);
+    addBodyBox(triBuilder, lineBuilder, root, yaw, scaleBox({ x: -1.32, y: 1.2, z: -0.86 }, scale), scaleBox({ x: 1.32, y: 1.66, z: 0.86 }, scale), shade(skirt, 0.9), false);
   }
 
   function renderAvatarAccessories(triBuilder, lineBuilder, character, pose) {
@@ -9650,6 +9675,7 @@ pickZombieSpawn() {
       vsRole: character.vsRole || null,
       vsClass: character.vsClass || null,
       infected: Boolean(character.infected),
+      gender: character.gender || 'boy',
       renderScale: character.renderScale || 1,
       grounded: Boolean(character.grounded)
     };

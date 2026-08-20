@@ -151,7 +151,7 @@
           <select id="broker-select" class="network-select"></select>
         </div>
         <div class="network-copy">
-          Games run through a free public relay server — no invite codes, no router setup. Everyone must be on the same public server (above) to see each other.
+          Games run through HiveMQ's free public relay — no invite codes, no router setup. Host a game or pick one from the live list below.
         </div>
 
         <div id="host-controls" class="network-section hidden">
@@ -192,6 +192,17 @@
             <span class="boot-label">Name</span>
             <input id="player-name-input" type="text" maxlength="18" value="Player" autocomplete="nickname" spellcheck="false">
           </label>
+          <div class="boot-label">Body</div>
+          <div id="gender-picker" class="avatar-preset-picker">
+            <button class="chrome-button avatar-preset-button active" data-gender="boy" type="button">
+              <strong>Boy</strong>
+              <span>Classic build</span>
+            </button>
+            <button class="chrome-button avatar-preset-button" data-gender="girl" type="button">
+              <strong>Girl</strong>
+              <span>Female Body Type  — all gear still fits</span>
+            </button>
+          </div>
           <div class="boot-label">Preset Avatar</div>
           <div id="avatar-preset-picker" class="avatar-preset-picker">
             <button class="chrome-button avatar-preset-button active" data-avatar-preset="regular" type="button">
@@ -253,6 +264,6 @@
   </div>
 
   <script src="music-data.js?v=1"></script>
-  <script src="script.js?v=38"></script>
+  <script src="script.js?v=42"></script>
 </body>
 </html>

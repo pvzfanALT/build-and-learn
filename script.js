@@ -2488,7 +2488,8 @@ allocatePlayerSpawn(index) {
       if (this.mode === 'host') {
         this.snapshotCooldown -= dt;
         if (this.snapshotCooldown <= 0) {
-          this.snapshotCooldown = 1 / 15;
+          // Faster snapshots = fresher authority = less perceived lag for joiners.
+          this.snapshotCooldown = 1 / 22;
           this.network.broadcastSnapshot();
         }
       }
@@ -2697,9 +2698,13 @@ allocatePlayerSpawn(index) {
       };
 
       const signature = JSON.stringify(packet);
-      if (signature !== this.lastSentInputSignature || this.inputSendCooldown <= 0) {
+      const changed = signature !== this.lastSentInputSignature;
+      // Cap to ~30Hz when the input is changing (aiming moves the camera every frame, which
+      // used to fire 60+ messages/sec and choke the public broker — adding lag, not removing
+      // it), with a slow heartbeat while idle so the host always has fresh input.
+      if ((changed && this.inputSendCooldown <= 0) || this.inputSendCooldown <= -0.18) {
         this.lastSentInputSignature = signature;
-        this.inputSendCooldown = 1 / 20;
+        this.inputSendCooldown = 1 / 30;
         this.network.sendInput(packet);
       }
     }
@@ -6568,9 +6573,15 @@ pickZombieSpawn() {
       character.poisonDps = target.poisonDps || 0;
       character.ko = target.ko;
       character.wo = target.wo;
-      character.pos = vLerp(character.pos, target.pos, clamp(dt * 12, 0, 1));
-      character.vel = vLerp(character.vel, target.vel, clamp(dt * 10, 0, 1));
-      character.yaw = turnTowardsAngle(character.yaw, target.yaw, dt * 12);
+      // Dead-reckoning: keep moving along the last known velocity between snapshots so remote
+      // players glide smoothly instead of freezing-then-jumping each update, then ease toward
+      // the freshest authoritative position. This is the big fix for perceived remote lag.
+      if (!target.dead) {
+        character.pos = vAdd(character.pos, vScale(character.vel, dt));
+      }
+      character.pos = vLerp(character.pos, target.pos, clamp(dt * 9, 0, 1));
+      character.vel = vLerp(character.vel, target.vel, clamp(dt * 12, 0, 1));
+      character.yaw = turnTowardsAngle(character.yaw, target.yaw, dt * 14);
       character.walkCycle += dt * (0.9 + clamp(Math.hypot(character.vel.x, character.vel.z) / character.walkSpeed, 0, 1) * 5.6);
     }
 
@@ -6582,9 +6593,13 @@ pickZombieSpawn() {
       zombie.dead = Boolean(target.dead);
       zombie.health = lerp(zombie.health, target.health, clamp(dt * 10, 0, 1));
       zombie.armor = target.armor || 0;
-      zombie.pos = vLerp(zombie.pos, target.pos, clamp(dt * 10, 0, 1));
-      zombie.vel = vLerp(zombie.vel, target.vel, clamp(dt * 8, 0, 1));
-      zombie.yaw = turnTowardsAngle(zombie.yaw, target.yaw, dt * 10);
+      // Dead-reckon zombies too so they don't stutter between the host's snapshots.
+      if (!target.dead) {
+        zombie.pos = vAdd(zombie.pos, vScale(zombie.vel, dt));
+      }
+      zombie.pos = vLerp(zombie.pos, target.pos, clamp(dt * 9, 0, 1));
+      zombie.vel = vLerp(zombie.vel, target.vel, clamp(dt * 12, 0, 1));
+      zombie.yaw = turnTowardsAngle(zombie.yaw, target.yaw, dt * 12);
       zombie.walkCycle += dt * (0.8 + clamp(Math.hypot(zombie.vel.x, zombie.vel.z) / Math.max(1, zombie.walkSpeed), 0, 1) * 5);
     }
 
@@ -6620,26 +6635,35 @@ pickZombieSpawn() {
         local.pos = vCopy(auth.pos);
         local.vel = vCopy(auth.vel);
       } else {
-        // Reconcile horizontally toward the host; snap only on a big desync.
+        // Prediction-first reconciliation. The client runs the SAME movement physics on the
+        // same inputs the host does, so the predicted position tracks the (relay-delayed)
+        // authority closely on its own. Continuously lerping toward the stale snapshot is what
+        // makes input feel laggy/rubber-bandy — so we trust prediction and only correct on a
+        // REAL divergence (knockback, an impulse, packet loss), where authority differs a lot.
         const horizErr = Math.hypot(local.pos.x - auth.pos.x, local.pos.z - auth.pos.z);
-        if (horizErr > 5) {
+        if (horizErr > 12) {
+          // Huge desync (respawn/teleport): snap and adopt authority velocity.
           local.pos.x = auth.pos.x;
           local.pos.z = auth.pos.z;
-        } else {
-          const k = clamp(dt * 6, 0, 1) * 0.5;
+          local.vel.x = auth.vel.x;
+          local.vel.z = auth.vel.z;
+        } else if (horizErr > 1.6) {
+          // Ordinary relay divergence (incl. the host over-running the last input before our
+          // "stop" arrives): ease over rather than hard-snap, so it reads as a glide not a jerk.
+          const k = clamp(dt * 9, 0, 1);
           local.pos.x = lerp(local.pos.x, auth.pos.x, k);
           local.pos.z = lerp(local.pos.z, auth.pos.z, k);
         }
-        // Vertical: trust local prediction while airborne so relay latency doesn't squash
-        // jumps; reconcile only when grounded or the gap is large.
+        // else: within a stride of the host — leave prediction alone for instant, snappy input.
+
+        // Vertical: trust prediction while airborne (so jumps aren't squashed); nudge only on
+        // the ground or a big gap.
         const yErr = Math.abs(local.pos.y - auth.pos.y);
-        if (yErr > 4 || (local.grounded && yErr > 0.35)) {
-          local.pos.y = lerp(local.pos.y, auth.pos.y, clamp(dt * 6, 0, 1) * 0.5);
+        if (yErr > 4 || (local.grounded && yErr > 0.4)) {
+          local.pos.y = lerp(local.pos.y, auth.pos.y, clamp(dt * 12, 0, 1));
         }
-        // Only pull horizontal velocity toward the host; keep our own vertical velocity.
-        local.vel.x = lerp(local.vel.x, auth.vel.x, 0.25);
-        local.vel.z = lerp(local.vel.z, auth.vel.z, 0.25);
-        local.yaw = turnTowardsAngle(local.yaw, auth.yaw, dt * 12);
+        // The client OWNS its own velocity and aim direction — never drag those toward the
+        // stale snapshot, or movement and turning feel delayed.
       }
 
       if (wasDead && !local.dead) {

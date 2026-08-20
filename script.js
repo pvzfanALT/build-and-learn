@@ -18,7 +18,6 @@
     avatarPresetDescription: document.getElementById('avatar-preset-description'),
     customAvatarPanel: document.getElementById('custom-avatar-panel'),
     customAvatarSlots: document.getElementById('custom-avatar-slots'),
-    directModeToggle: document.getElementById('direct-mode-toggle'),
     debugEnableButton: document.getElementById('debug-enable-button'),
     studioButton: document.getElementById('studio-button'),
     studioScreen: document.getElementById('studio-screen'),
@@ -82,29 +81,14 @@
     networkStatus: document.getElementById('network-status'),
     hostControls: document.getElementById('host-controls'),
     joinControls: document.getElementById('join-controls'),
-    createInviteButton: document.getElementById('create-invite-button'),
-    hostOfferOutput: document.getElementById('host-offer-output'),
-    copyHostOfferButton: document.getElementById('copy-host-offer-button'),
-    clearHostOfferButton: document.getElementById('clear-host-offer-button'),
-    hostAnswerInput: document.getElementById('host-answer-input'),
-    completeJoinButton: document.getElementById('complete-join-button'),
-    clearHostAnswerButton: document.getElementById('clear-host-answer-button'),
     connectedPlayers: document.getElementById('connected-players'),
-    joinOfferInput: document.getElementById('join-offer-input'),
-    generateAnswerButton: document.getElementById('generate-answer-button'),
-    clearJoinOfferButton: document.getElementById('clear-join-offer-button'),
-    joinAnswerOutput: document.getElementById('join-answer-output'),
-    copyJoinAnswerButton: document.getElementById('copy-join-answer-button'),
-    clearJoinAnswerButton: document.getElementById('clear-join-answer-button')
+    brokerSelect: document.getElementById('broker-select'),
+    refreshServersButton: document.getElementById('refresh-servers-button'),
+    serverList: document.getElementById('server-list')
   };
 
   const TAU = Math.PI * 2;
   const OUTLINE = rgba(18, 18, 18, 1);
-  const DEFAULT_ICE_SERVERS = [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun.cloudflare.com:3478' }
-  ];
-
   const COLORS = {
     grass: rgba(58, 82, 54, 1),
     grassDark: rgba(44, 64, 42, 1),
@@ -870,6 +854,13 @@
   simulateLoading();
   bindBootUi();
 
+  // Clear our public-server presence when the tab closes so stale games vanish.
+  window.addEventListener('beforeunload', () => {
+    if (game && game.network && game.network.leave) {
+      game.network.leave();
+    }
+  });
+
   function simulateLoading() {
     const stepCaptions = [
       'Connecting to server...',
@@ -1035,7 +1026,6 @@
         mode,
         playerName,
         avatarPreset,
-        useStun: !dom.directModeToggle.checked,
         debug: debugRequested || Boolean(extra.studioProject),
         worldBlocks: extra.worldBlocks || null,
         studioProject: extra.studioProject || null,
@@ -1050,10 +1040,12 @@
       }
       if (mode === 'host') {
         game.toggleNetworkWindow(true);
-        game.network.createInvite().catch((error) => game.setNetworkStatus(`Invite creation failed.\n${String(error.message || error)}`));
+        game.network.startHosting({ name: `${playerName}'s Zombie Versus`, host: playerName, map: 'Zombie Versus' });
+        game.setHint('You are hosting! Friends open Join Online and pick your game from the server list.', 12);
       } else if (mode === 'client') {
         game.toggleNetworkWindow(true);
-        game.setHint('Paste a host invite code into the Online window, then generate your answer code.', 12);
+        game.startServerBrowser();
+        game.setHint('Pick a game from the server list to join. Hit Refresh if it looks empty.', 12);
       }
     } catch (error) {
       console.error(error);
@@ -1097,8 +1089,11 @@ class ClassicOnlineReplica {
       classCooldown: 0,
       classCooldownMax: 8,
       loadout: [],
-      weaponSelectOpen: false
+      weaponSelectOpen: false,
+      mapIndex: 0
     };
+    this.vsWorldTag = 'lobby';
+    this.appliedVersusResult = '';
     this.world = this.versus
       ? buildWorldFromBlocks(makeVersusLobby())
       : (options.worldBlocks ? buildWorldFromBlocks(options.worldBlocks) : buildZombieWorld());
@@ -1185,10 +1180,9 @@ class ClassicOnlineReplica {
       autoRestartAt: 0
     };
 
-// 1. Initialize the network FIRST
-this.network = new ManualRtcNetwork(this, {
-  role: this.mode,
-  useStun: options.useStun
+// 1. Initialize the network FIRST — public broker relay (server-list based, no manual codes).
+this.network = new PublicServerNetwork(this, {
+  role: this.mode
 });
 
 // 2. THEN create and add the player
@@ -1217,8 +1211,15 @@ this.addCharacter(this.localPlayer);
     this.updateSessionHeader();
     if (this.versus) {
       this.dom.placeName.textContent = 'Zombie Versus';
-      this.enterLobby();
-      this.pushChat('System', 'Zombie Versus — welcome to the lobby! Step the green pad to summon a bot to play against.', true);
+      if (this.mode === 'client') {
+        // The host owns the versus lobby/round; the joiner just mirrors it from snapshots.
+        this.buildZombieClassPanel();
+        this.pushChat('System', 'Connecting to the host\'s Zombie Versus session...', true);
+        this.setHint('Join mode: open Online, paste the host invite, and generate your answer code.', 12);
+      } else {
+        this.enterLobby();
+        this.pushChat('System', 'Zombie Versus — welcome to the lobby! Step the green pad to summon a bot to play against.', true);
+      }
       this.onResize();
       return;
     }
@@ -2016,47 +2017,65 @@ allocatePlayerSpawn(index) {
         }
       });
 
-      this.dom.createInviteButton.addEventListener('click', () => {
-        this.network.createInvite().catch((error) => this.setNetworkStatus(`Invite creation failed.\n${String(error.message || error)}`));
-      });
+      this.setupNetworkUi();
+    }
 
-      this.dom.copyHostOfferButton.addEventListener('click', async () => {
-        await copyTextToClipboard(this.dom.hostOfferOutput.value);
-        this.setNetworkStatus('Invite code copied. Send it to the joiner.');
-      });
-
-      this.dom.clearHostOfferButton.addEventListener('click', () => {
-        this.dom.hostOfferOutput.value = '';
-      });
-
-      this.dom.completeJoinButton.addEventListener('click', () => {
-        this.network.acceptAnswer(this.dom.hostAnswerInput.value).catch((error) => {
-          this.setNetworkStatus(`Could not finish the join.\n${String(error.message || error)}`);
+    setupNetworkUi() {
+      // Public-server picker (all players must match to see each other).
+      if (this.dom.brokerSelect) {
+        this.dom.brokerSelect.textContent = '';
+        for (const b of PUBLIC_BROKERS) {
+          const opt = document.createElement('option');
+          opt.value = b.url;
+          opt.textContent = b.name;
+          this.dom.brokerSelect.appendChild(opt);
+        }
+        this.dom.brokerSelect.value = this.network.brokerUrl;
+        this.dom.brokerSelect.addEventListener('change', () => {
+          this.network.setBrokerUrl(this.dom.brokerSelect.value);
+          // Reconnect on the new broker for the current role.
+          this.network.leave();
+          if (this.mode === 'host') {
+            this.network.startHosting({ name: `${this.localCharacter.name}'s Zombie Versus`, host: this.localCharacter.name, map: 'Zombie Versus' });
+          } else if (this.mode === 'client') {
+            this.startServerBrowser();
+          }
         });
-      });
-
-      this.dom.clearHostAnswerButton.addEventListener('click', () => {
-        this.dom.hostAnswerInput.value = '';
-      });
-
-      this.dom.generateAnswerButton.addEventListener('click', () => {
-        this.network.generateAnswer(this.dom.joinOfferInput.value).catch((error) => {
-          this.setNetworkStatus(`Could not generate an answer.\n${String(error.message || error)}`);
+      }
+      if (this.dom.refreshServersButton) {
+        this.dom.refreshServersButton.addEventListener('click', () => this.renderServerList());
+      }
+      if (this.dom.serverList) {
+        this.dom.serverList.addEventListener('click', (event) => {
+          const target = event.target instanceof Element ? event.target.closest('[data-server-id]') : null;
+          if (!target) return;
+          this.network.joinServer(target.dataset.serverId);
+          this.setNetworkStatus('Joining… you will spawn in once the host answers.');
         });
-      });
+      }
+    }
 
-      this.dom.clearJoinOfferButton.addEventListener('click', () => {
-        this.dom.joinOfferInput.value = '';
-      });
+    startServerBrowser() {
+      this.network.startBrowsing(() => this.renderServerList());
+      this.renderServerList();
+    }
 
-      this.dom.copyJoinAnswerButton.addEventListener('click', async () => {
-        await copyTextToClipboard(this.dom.joinAnswerOutput.value);
-        this.setNetworkStatus('Answer code copied. Send it back to the host.');
-      });
-
-      this.dom.clearJoinAnswerButton.addEventListener('click', () => {
-        this.dom.joinAnswerOutput.value = '';
-      });
+    renderServerList() {
+      if (!this.dom.serverList) return;
+      const servers = this.network.getServerList ? this.network.getServerList() : [];
+      if (!servers.length) {
+        this.dom.serverList.innerHTML = '<div class="server-empty">No live games yet. Ask a friend to press Host Online (on the same public server), then hit Refresh.</div>';
+        return;
+      }
+      this.dom.serverList.innerHTML = servers.map((s) => `
+        <div class="server-row">
+          <div class="server-info">
+            <div class="server-name">${escapeHtml(s.name || 'Zombie Versus')}</div>
+            <div class="server-sub">${escapeHtml(s.host || 'Host')} • ${s.players || 1} player${(s.players || 1) === 1 ? '' : 's'} • ${escapeHtml(s.phase || 'lobby')}</div>
+          </div>
+          <button class="chrome-button" type="button" data-server-id="${escapeHtml(s.serverId)}">Join</button>
+        </div>
+      `).join('');
     }
 
     equipWeapon(weaponKey, notify) {
@@ -2088,10 +2107,7 @@ allocatePlayerSpawn(index) {
         const activeElement = document.activeElement;
         const typing = activeElement === this.dom.chatInput
           || activeElement === this.dom.playerNameInput
-          || activeElement === this.dom.joinOfferInput
-          || activeElement === this.dom.hostAnswerInput
-          || activeElement === this.dom.hostOfferOutput
-          || activeElement === this.dom.joinAnswerOutput;
+          || (activeElement && activeElement.tagName === 'SELECT');
 
         if (typing && event.key !== 'Escape') {
           return;
@@ -2510,6 +2526,9 @@ allocatePlayerSpawn(index) {
       if (actor.transformTime > 0) {
         actor.transformTime = Math.max(0, actor.transformTime - dt);
       }
+      if (actor.clawCooldown > 0) {
+        actor.clawCooldown = Math.max(0, actor.clawCooldown - dt);
+      }
       if (actor.ashTime > 0) {
         actor.ashTime = Math.max(0, actor.ashTime - dt);
       }
@@ -2629,7 +2648,23 @@ allocatePlayerSpawn(index) {
 
     clientToolUse(input) {
       const local = this.localCharacter;
-      if (!local || local.dead || !local.selectedTool || !this.network.isGameplayReady()) {
+      if (!local || local.dead || !this.network.isGameplayReady()) {
+        return;
+      }
+      // A joined zombie claws instead of firing: tell the host to resolve the swipe.
+      if (this.versus && local.vsRole === 'zombie') {
+        if ((local.clawCooldown || 0) > 0 || this.vs.phase !== 'playing' || this.time < (this.vs.releaseAt || 0)) {
+          return;
+        }
+        const cls = VERSUS_ZOMBIE_CLASSES[local.vsClass] || VERSUS_ZOMBIE_CLASSES.normal;
+        local.clawCooldown = cls.swingCooldown || 0.8;
+        local.swing = local.swing || { time: 0, duration: 0.34, didHit: false, weaponKey: null };
+        local.swing.time = 0.34;
+        this.audio.playSwordSwing();
+        this.network.sendToolUse({ claw: true });
+        return;
+      }
+      if (!local.selectedTool) {
         return;
       }
       const weapon = getWeaponDef(local.selectedTool);
@@ -4073,9 +4108,26 @@ if (target.isLocal) {
     }
 
     // ===================== ZOMBIE VERSUS =====================
-    setWorld(blocks) {
+    setWorld(blocks, worldTag) {
       this.world = buildWorldFromBlocks(blocks);
       this.renderer.setStaticWorld(this.world);
+      if (worldTag) {
+        this.vsWorldTag = worldTag;
+      }
+    }
+
+    // Client-side: rebuild the world to match the host's current versus stage.
+    applyVersusWorldTag(tag) {
+      if (!tag || tag === this.vsWorldTag) {
+        return;
+      }
+      if (tag === 'lobby') {
+        this.setWorld(makeVersusLobby(), 'lobby');
+      } else if (tag.startsWith('map:')) {
+        const idx = Number(tag.slice(4)) || 0;
+        const map = VERSUS_MAPS[idx % VERSUS_MAPS.length] || VERSUS_MAPS[0];
+        this.setWorld(map.build(), tag);
+      }
     }
 
     ensureVersusLabel() {
@@ -4099,7 +4151,7 @@ if (target.isLocal) {
       if (this.dom.victoryBanner) this.dom.victoryBanner.classList.add('hidden');
       if (this.dom.weaponSelectWindow) this.dom.weaponSelectWindow.classList.add('hidden');
       if (this.dom.zombieClassPanel) this.dom.zombieClassPanel.classList.add('hidden');
-      this.setWorld(makeVersusLobby());
+      this.setWorld(makeVersusLobby(), 'lobby');
       this.audio.stopMusic();
       // Keep the same crew for the next round: rebuild however many bots were playing.
       const keepBots = Math.min(5, this.vs.bots.length + [...this.zombies.values()].filter((z) => z.isBot).length);
@@ -4176,8 +4228,10 @@ if (target.isLocal) {
       this.vs.classCooldownMax = 8;
       this.vs.weaponSelectOpen = false;
       // Rotate the arena each round: graveyard → backyard → Christmas village.
-      const map = VERSUS_MAPS[(this.vs.round - 1) % VERSUS_MAPS.length];
-      this.setWorld(map.build());
+      const mapIndex = (this.vs.round - 1) % VERSUS_MAPS.length;
+      const map = VERSUS_MAPS[mapIndex];
+      this.vs.mapIndex = mapIndex;
+      this.setWorld(map.build(), `map:${mapIndex}`);
       this.pushChat('System', `Map: ${map.name}`, true);
       this.zombies.clear();
       this.projectiles = [];
@@ -4344,6 +4398,11 @@ if (person.isLocal) {
 
     selectZombieClass(className) {
       const local = this.localCharacter;
+      if (this.mode === 'client') {
+        // Class is host-assigned when you join online; you can't reroll it mid-round.
+        this.setHint('Your class is set by the host this round.', 2);
+        return;
+      }
       if (!local || local.vsRole !== 'zombie' || !VERSUS_ZOMBIE_CLASSES[className]) {
         return;
       }
@@ -4705,8 +4764,9 @@ countVersusHumans() {
             this.vs.buttonCooldown = 0.8;
           }
         }
-        // Auto-start countdown once at least one bot is present.
-        if (this.vs.bots.length >= 1) {
+        // Auto-start once at least one opponent is present — a bot OR a joined online player.
+        const remotePlayers = [...this.characters.values()].filter((c) => !c.isLocal && !c.isBot).length;
+        if (this.vs.bots.length + remotePlayers >= 1) {
           if (this.vs.countdown <= 0) {
             this.vs.countdown = 8;
             this.vs.lastCountTick = 99;
@@ -4845,6 +4905,30 @@ for (const bot of this.characters.values()) {
       }
     }
 
+    // Host-authoritative claw for a remote (online) zombie player — range-based so it
+    // works without perfectly synced facing. Returns true if it hit a survivor.
+    remoteZombieClawSwipe(attacker) {
+      if (!attacker || (attacker.clawCooldown || 0) > 0 || this.time < (this.vs.releaseAt || 0)) {
+        return false;
+      }
+      const cls = VERSUS_ZOMBIE_CLASSES[attacker.vsClass] || VERSUS_ZOMBIE_CLASSES.normal;
+      attacker.clawCooldown = cls.swingCooldown || 0.8;
+      attacker.swing = attacker.swing || { time: 0, duration: 0.34, didHit: false, weaponKey: null };
+      attacker.swing.time = 0.34;
+      let landed = false;
+      for (const target of this.characters.values()) {
+        if (target.id === attacker.id || target.vsRole === 'zombie' || target.dead || target.forcefield > 0) {
+          continue;
+        }
+        if (vLength(vSub(target.pos, attacker.pos)) < 4.6) {
+          const planar = vNormalizeXZ(vSub(target.pos, attacker.pos));
+          this.applyDamage(target, { amount: cls.damage || 30, direction: planar, tags: ['zombie-claw'], knockback: 6 }, attacker, vAdd(vScale(planar, 6), v3(0, 2, 0)));
+          landed = true;
+        }
+      }
+      return landed;
+    }
+
     // Class throwable (doctor acid bucket, pumpkin chunk, TP roll). Shared by the local
     // zombie (F key, aims where the camera looks) and zombie bots (aim at their target).
     throwZombieSpecial(thrower, targetPoint) {
@@ -4896,6 +4980,11 @@ for (const bot of this.characters.values()) {
 
     localZombieThrow() {
       const local = this.localCharacter;
+      if (this.mode === 'client') {
+        // Throwables are host-simulated; a joiner sticks to claws to stay in sync.
+        this.setHint('Throwables are available when hosting — claw them down instead!', 2.5);
+        return;
+      }
       if (!local || local.vsRole !== 'zombie' || this.vs.phase !== 'playing' || this.time < (this.vs.releaseAt || 0)) {
         return;
       }
@@ -6074,11 +6163,7 @@ pickZombieSpawn() {
         || !this.dom.networkWindow.classList.contains('hidden')
         || !this.dom.debugWindow.classList.contains('hidden')
         || document.activeElement === this.dom.chatInput
-        || document.activeElement === this.dom.playerNameInput
-        || document.activeElement === this.dom.joinOfferInput
-        || document.activeElement === this.dom.hostAnswerInput
-        || document.activeElement === this.dom.hostOfferOutput
-        || document.activeElement === this.dom.joinAnswerOutput;
+        || document.activeElement === this.dom.playerNameInput;
     }
 
     onResize() {
@@ -6110,7 +6195,14 @@ pickZombieSpawn() {
         ...action,
         selectedTool: action.selectedTool || character.selectedTool
       };
-      if (this.round.phase === 'playing') {
+      const combatLive = this.round.phase === 'playing' || (this.versus && this.vs.phase === 'playing');
+      if (!combatLive) {
+        return;
+      }
+      if (this.versus && character.vsRole === 'zombie') {
+        // A joined zombie's click is a claw swipe, not a gunshot.
+        this.remoteZombieClawSwipe(character);
+      } else {
         this.useCurrentWeapon(character, action);
       }
     }
@@ -6134,8 +6226,22 @@ pickZombieSpawn() {
       character.bodyColors = cloneBodyColors(getAvatarPreset(character.avatarPreset).bodyColors);
       this.resetCharacterForNewRun(character, this.allocatePlayerSpawn(this.characters.size - 1));
       character.initializedFromNetwork = true;
+      if (this.versus) {
+        // Joiners start as survivors; drop them into the lobby so they count for the round.
+        character.vsRole = 'human';
+        character.infected = false;
+        character.vsClass = null;
+        character.renderScale = 1;
+        if (this.vs.phase === 'lobby') {
+          character.pos = v3(randRange(-8, 8), 0.6, randRange(2, 12));
+          character.vel = v3();
+        }
+      }
       this.refreshAllUi(true);
-      const message = `${character.name} joined the zombie survival session.`;
+      this.refreshConnectedPlayers();
+      const message = this.versus
+        ? `${character.name} joined the lobby!`
+        : `${character.name} joined the zombie survival session.`;
       this.pushChat('System', message, true);
       this.network.broadcastSystemChat(message, connectionKey);
       this.network.sendWelcome(connectionKey, character.id);
@@ -6147,9 +6253,10 @@ pickZombieSpawn() {
       if (!character) {
         return;
       }
-      const message = `${character.name} left the zombie survival session.`;
+      const message = `${character.name} left the game.`;
       this.removeCharacter(playerId);
       this.pushChat('System', message, true);
+      this.refreshConnectedPlayers();
       if (this.mode === 'host') {
         this.network.broadcastSystemChat(message);
         if (!this.livingPlayers.length && this.round.phase === 'playing') {
@@ -6176,6 +6283,15 @@ pickZombieSpawn() {
       return {
         serverTime: roundNetworkFloat(this.time),
         round: serializeRoundState(this.round, this.sharedArmory, this.livingZombies.length),
+        vs: this.versus ? {
+          phase: this.vs.phase,
+          worldTag: this.vsWorldTag || 'lobby',
+          timer: roundNetworkFloat(this.vs.timer),
+          releaseAt: roundNetworkFloat(this.vs.releaseAt),
+          countdown: roundNetworkFloat(this.vs.countdown),
+          round: this.vs.round,
+          result: this.vs.result || ''
+        } : null,
         players: [...this.characters.values()].map((character) => serializeCharacter(character)),
         zombies: [...this.zombies.values()].map((zombie) => serializeZombie(zombie, this.time)),
         sentries: this.sentries.map((sentry) => serializeSentry(sentry)),
@@ -6190,6 +6306,15 @@ pickZombieSpawn() {
         return;
       }
 
+      // Becoming "ready" the moment the host's snapshot includes us is bulletproof:
+      // it proves the host spawned us even if the one-shot welcome packet was dropped
+      // (the welcome can race the client's subscription and never arrive).
+      if (this.mode === 'client' && this.network && !this.network.isGameplayReady()
+          && snapshot.players.some((p) => p.id === this.localPlayerId)) {
+        this.network.gameplayReady = true;
+        this.onWelcomeFromHost(this.localPlayerId);
+      }
+
       if (snapshot.round) {
         this.round.phase = snapshot.round.phase;
         this.round.wave = snapshot.round.wave;
@@ -6198,6 +6323,24 @@ pickZombieSpawn() {
         this.round.nextUnlockIndex = snapshot.round.nextUnlockIndex;
         this.sharedArmory.gold = snapshot.round.gold;
         this.sharedArmory.ownedVipKeys = new Set(snapshot.round.ownedVipKeys || []);
+      }
+
+      // Mirror the host's Zombie Versus stage: phase, timer, and which map to render.
+      if (this.versus && snapshot.vs) {
+        this.vs.phase = snapshot.vs.phase;
+        this.vs.timer = snapshot.vs.timer;
+        this.vs.releaseAt = snapshot.vs.releaseAt;
+        this.vs.countdown = snapshot.vs.countdown;
+        this.vs.round = snapshot.vs.round;
+        this.vs.result = snapshot.vs.result;
+        this.applyVersusWorldTag(snapshot.vs.worldTag);
+        if (snapshot.vs.result && snapshot.vs.result !== this.appliedVersusResult) {
+          this.appliedVersusResult = snapshot.vs.result;
+          this.pushChat('System', snapshot.vs.result, true);
+        }
+        if (snapshot.vs.phase !== 'roundend') {
+          this.appliedVersusResult = '';
+        }
       }
 
       const seenPlayerIds = new Set();
@@ -6227,6 +6370,23 @@ pickZombieSpawn() {
             local.ko = playerData.ko;
             local.wo = playerData.wo;
             local.spawn = vCopy(playerData.spawn || local.spawn);
+            if (this.versus) {
+              const wasZombie = local.vsRole === 'zombie';
+              local.vsRole = playerData.vsRole || 'human';
+              local.vsClass = playerData.vsClass || null;
+              local.infected = Boolean(playerData.infected);
+              local.renderScale = playerData.renderScale || 1;
+              // First moment we learn we've been infected: flip UI to claws + class panel.
+              if (!wasZombie && local.vsRole === 'zombie') {
+                this.playTransformEffect(local);
+                this.setHint('You were infected! Hunt the survivors — click to claw.', 5);
+              }
+              if (wasZombie && local.vsRole !== 'zombie') {
+                this.setHint('New round — you are a survivor. Grab a weapon and stay alive!', 5);
+              }
+              this.refreshEquipmentUi();
+              this.updateZombieClassPanel();
+            }
           }
           continue;
         }
@@ -6254,6 +6414,12 @@ pickZombieSpawn() {
         character.poisonDps = playerData.poisonDps || 0;
         character.ko = playerData.ko;
         character.wo = playerData.wo;
+        if (this.versus) {
+          character.vsRole = playerData.vsRole || 'human';
+          character.vsClass = playerData.vsClass || null;
+          character.infected = Boolean(playerData.infected);
+          character.renderScale = playerData.renderScale || 1;
+        }
         character.netTarget = playerData;
         character.netReceivedAt = this.time;
         character.initializedFromNetwork = true;
@@ -6396,13 +6562,25 @@ pickZombieSpawn() {
         local.pos = vCopy(auth.pos);
         local.vel = vCopy(auth.vel);
       } else {
-        const error = vLength(vSub(local.pos, auth.pos));
-        if (error > 4) {
-          local.pos = vCopy(auth.pos);
+        // Reconcile horizontally toward the host; snap only on a big desync.
+        const horizErr = Math.hypot(local.pos.x - auth.pos.x, local.pos.z - auth.pos.z);
+        if (horizErr > 5) {
+          local.pos.x = auth.pos.x;
+          local.pos.z = auth.pos.z;
         } else {
-          local.pos = vLerp(local.pos, auth.pos, clamp(dt * 6, 0, 1) * 0.55);
+          const k = clamp(dt * 6, 0, 1) * 0.5;
+          local.pos.x = lerp(local.pos.x, auth.pos.x, k);
+          local.pos.z = lerp(local.pos.z, auth.pos.z, k);
         }
-        local.vel = vLerp(local.vel, auth.vel, 0.25);
+        // Vertical: trust local prediction while airborne so relay latency doesn't squash
+        // jumps; reconcile only when grounded or the gap is large.
+        const yErr = Math.abs(local.pos.y - auth.pos.y);
+        if (yErr > 4 || (local.grounded && yErr > 0.35)) {
+          local.pos.y = lerp(local.pos.y, auth.pos.y, clamp(dt * 6, 0, 1) * 0.5);
+        }
+        // Only pull horizontal velocity toward the host; keep our own vertical velocity.
+        local.vel.x = lerp(local.vel.x, auth.vel.x, 0.25);
+        local.vel.z = lerp(local.vel.z, auth.vel.z, 0.25);
         local.yaw = turnTowardsAngle(local.yaw, auth.yaw, dt * 12);
       }
 
@@ -6414,371 +6592,516 @@ pickZombieSpawn() {
     }
   }
 
-  class ManualRtcNetwork {
+  // ============================================================
+  //  PUBLIC-SERVER NETWORKING
+  //  A tiny hand-rolled MQTT 3.1.1 client over secure WebSocket +
+  //  a relay network layer. Free public brokers act as the game
+  //  server: hosts advertise games into a shared lobby, clients
+  //  browse a live server list and join — no codes, no NAT/TURN.
+  // ============================================================
+
+  const PUBLIC_BROKERS = [
+    { name: 'EMQX (public)', url: 'wss://broker.emqx.io:8084/mqtt' },
+    { name: 'HiveMQ (public)', url: 'wss://broker.hivemq.com:8884/mqtt' },
+    { name: 'Mosquitto (public)', url: 'wss://test.mosquitto.org:8081/mqtt' }
+  ];
+  // Bump the realm string if the wire protocol ever changes so old clients don't mix in.
+  const NET_REALM = 'bnlzv1';
+
+  function loadPreferredBroker() {
+    try {
+      const saved = localStorage.getItem('build-and-learn-broker');
+      if (saved && PUBLIC_BROKERS.some((b) => b.url === saved)) {
+        return saved;
+      }
+    } catch (error) { /* ignore */ }
+    return PUBLIC_BROKERS[0].url;
+  }
+
+  class MiniMqtt {
+    constructor(url, options = {}) {
+      this.url = url;
+      this.clientId = options.clientId || `bnl-${Math.random().toString(16).slice(2, 10)}`;
+      this.keepalive = options.keepalive || 30;
+      this.will = options.will || null;
+      this.onConnect = options.onConnect || (() => {});
+      this.onMessage = options.onMessage || (() => {});
+      this.onClose = options.onClose || (() => {});
+      this.onError = options.onError || (() => {});
+      this.ws = null;
+      this.connected = false;
+      this.rxBuffer = new Uint8Array(0);
+      this.pingTimer = null;
+      this.encoder = new TextEncoder();
+      this.decoder = new TextDecoder();
+    }
+
+    connect() {
+      try {
+        this.ws = new WebSocket(this.url, 'mqtt');
+      } catch (error) {
+        this.onError(error);
+        return;
+      }
+      this.ws.binaryType = 'arraybuffer';
+      this.ws.addEventListener('open', () => this.sendConnect());
+      this.ws.addEventListener('message', (event) => this.handleBytes(new Uint8Array(event.data)));
+      this.ws.addEventListener('close', () => {
+        this.connected = false;
+        if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null; }
+        this.onClose();
+      });
+      this.ws.addEventListener('error', (error) => this.onError(error));
+    }
+
+    encString(str) {
+      const bytes = this.encoder.encode(str);
+      const out = new Uint8Array(bytes.length + 2);
+      out[0] = (bytes.length >> 8) & 0xff;
+      out[1] = bytes.length & 0xff;
+      out.set(bytes, 2);
+      return out;
+    }
+
+    encRemainingLength(len) {
+      const bytes = [];
+      do {
+        let b = len % 128;
+        len = Math.floor(len / 128);
+        if (len > 0) b |= 0x80;
+        bytes.push(b);
+      } while (len > 0);
+      return Uint8Array.from(bytes);
+    }
+
+    frame(byte1, variableAndPayload) {
+      const rem = this.encRemainingLength(variableAndPayload.length);
+      const out = new Uint8Array(1 + rem.length + variableAndPayload.length);
+      out[0] = byte1;
+      out.set(rem, 1);
+      out.set(variableAndPayload, 1 + rem.length);
+      return out;
+    }
+
+    concat(arrays) {
+      let total = 0;
+      for (const a of arrays) total += a.length;
+      const out = new Uint8Array(total);
+      let off = 0;
+      for (const a of arrays) { out.set(a, off); off += a.length; }
+      return out;
+    }
+
+    raw(bytes) {
+      if (this.ws && this.ws.readyState === 1) {
+        this.ws.send(bytes);
+      }
+    }
+
+    sendConnect() {
+      let flags = 0x02; // clean session
+      const payloadParts = [this.encString(this.clientId)];
+      if (this.will) {
+        flags |= 0x04; // will flag
+        if (this.will.retain) flags |= 0x20;
+        payloadParts.push(this.encString(this.will.topic));
+        payloadParts.push(this.encString(this.will.payload || ''));
+      }
+      const variableHeader = this.concat([
+        this.encString('MQTT'),
+        Uint8Array.from([0x04, flags, (this.keepalive >> 8) & 0xff, this.keepalive & 0xff])
+      ]);
+      const body = this.concat([variableHeader, this.concat(payloadParts)]);
+      this.raw(this.frame(0x10, body));
+    }
+
+    subscribe(topicFilter) {
+      const packetId = Uint8Array.from([0x00, 0x01]);
+      const body = this.concat([packetId, this.encString(topicFilter), Uint8Array.from([0x00])]);
+      this.raw(this.frame(0x82, body));
+    }
+
+    publish(topic, payloadStr, retain = false) {
+      const payload = this.encoder.encode(payloadStr);
+      const body = this.concat([this.encString(topic), payload]);
+      this.raw(this.frame(0x30 | (retain ? 0x01 : 0x00), body));
+    }
+
+    ping() {
+      this.raw(Uint8Array.from([0xc0, 0x00]));
+    }
+
+    end() {
+      try {
+        this.raw(Uint8Array.from([0xe0, 0x00]));
+        if (this.ws) this.ws.close();
+      } catch (error) { /* ignore */ }
+    }
+
+    handleBytes(chunk) {
+      // Append to the running buffer, then pull out every complete packet.
+      const merged = new Uint8Array(this.rxBuffer.length + chunk.length);
+      merged.set(this.rxBuffer, 0);
+      merged.set(chunk, this.rxBuffer.length);
+      this.rxBuffer = merged;
+
+      let offset = 0;
+      while (offset + 2 <= this.rxBuffer.length) {
+        const byte1 = this.rxBuffer[offset];
+        // Decode remaining length (up to 4 bytes).
+        let multiplier = 1;
+        let remLen = 0;
+        let i = offset + 1;
+        let done = false;
+        let lenBytes = 0;
+        while (i < this.rxBuffer.length) {
+          const b = this.rxBuffer[i];
+          remLen += (b & 0x7f) * multiplier;
+          multiplier *= 128;
+          lenBytes += 1;
+          i += 1;
+          if ((b & 0x80) === 0) { done = true; break; }
+          if (lenBytes >= 4) { done = true; break; }
+        }
+        if (!done) break; // need more bytes for the length field
+        const headerLen = 1 + lenBytes;
+        if (offset + headerLen + remLen > this.rxBuffer.length) break; // packet not fully arrived
+        const packetType = byte1 >> 4;
+        const payloadStart = offset + headerLen;
+        this.handlePacket(packetType, byte1, this.rxBuffer.subarray(payloadStart, payloadStart + remLen));
+        offset = payloadStart + remLen;
+      }
+      this.rxBuffer = this.rxBuffer.subarray(offset);
+    }
+
+    handlePacket(type, byte1, body) {
+      if (type === 2) {
+        // CONNACK
+        this.connected = true;
+        if (this.pingTimer) clearInterval(this.pingTimer);
+        this.pingTimer = setInterval(() => this.ping(), this.keepalive * 1000 * 0.75);
+        this.onConnect();
+      } else if (type === 3) {
+        // PUBLISH (assume QoS 0 — no packet id)
+        const topicLen = (body[0] << 8) | body[1];
+        const topic = this.decoder.decode(body.subarray(2, 2 + topicLen));
+        const payload = this.decoder.decode(body.subarray(2 + topicLen));
+        this.onMessage(topic, payload);
+      }
+      // SUBACK / PINGRESP ignored.
+    }
+  }
+
+  class PublicServerNetwork {
     constructor(gameInstance, options) {
       this.game = gameInstance;
       this.role = options.role;
-      this.useStun = options.useStun;
-      this.peers = new Map();
       this.gameplayReady = this.role !== 'client';
-      this.joinConnectionKey = null;
-      this.rtcAvailable = typeof RTCPeerConnection !== 'undefined';
+      this.brokerUrl = loadPreferredBroker();
+      this.mqtt = null;
+      this.brokerConnected = false;
+      this.serverId = null;         // host: our id; client: the joined id
+      this.joined = false;          // client: has picked + joined a server
+      this.peers = new Map();       // host: playerId -> { lastSeen }
+      this.serverList = new Map();  // client: serverId -> meta
+      this.hostMeta = null;
+      this.heartbeatTimer = null;
+      this.pruneTimer = null;
+      this.listChangeCb = null;
 
-      if (!this.rtcAvailable && this.role !== 'solo') {
-        this.game.setNetworkStatus('WebRTC is not available in this browser. Multiplayer cannot start here.');
-      } else if (this.role === 'solo') {
+      if (this.role === 'solo') {
         this.game.setNetworkStatus('Offline solo session.');
-      } else if (this.role === 'host') {
-        this.game.setNetworkStatus(this.useStun
-          ? 'Hosting with wider internet mode. Create an invite code below.'
-          : 'Hosting in strict direct mode. Best for LAN or very direct peer links.');
-      } else {
-        this.game.setNetworkStatus(this.useStun
-          ? 'Join mode ready. Paste a host invite, generate your answer, then wait for the host to finish the handshake.'
-          : 'Join mode ready in strict direct mode. Best for LAN or direct peer links.');
       }
     }
 
-    get rtcConfig() {
+    topics() {
+      const base = `${NET_REALM}`;
       return {
-        iceServers: this.useStun ? DEFAULT_ICE_SERVERS : []
+        lobbyWild: `${base}/lobby/+`,
+        lobby: (id) => `${base}/lobby/${id}`,
+        down: (id) => `${base}/room/${id}/d`,
+        up: (id) => `${base}/room/${id}/u`
       };
-    }
-
-    isChannelOpen() {
-      if (this.role === 'host') {
-        return true;
-      }
-      const peer = this.joinConnectionKey ? this.peers.get(this.joinConnectionKey) : null;
-      return Boolean(peer && peer.channel && peer.channel.readyState === 'open');
     }
 
     isGameplayReady() {
       return this.gameplayReady;
     }
 
-    async createInvite() {
-      if (this.role !== 'host') {
-        return;
-      }
-      if (!this.rtcAvailable) {
-        throw new Error('WebRTC is unavailable in this browser.');
-      }
-      const connectionKey = makeId(8);
-      const pc = new RTCPeerConnection(this.rtcConfig);
-      const channel = pc.createDataChannel('build-and-learn-zombie-survival', { ordered: true });
-      const peer = this.attachPeer(connectionKey, pc, channel);
-      peer.inviteId = connectionKey;
-
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      await waitForIceGatheringComplete(pc);
-
-      const signal = encodeSignal({
-        kind: 'offer',
-        inviteId: connectionKey,
-        description: pc.localDescription
-      });
-
-      this.game.dom.hostOfferOutput.value = signal;
-      this.game.setNetworkStatus('Invite code ready. Send it to the joiner, then paste their answer below.');
-      return signal;
+    isChannelOpen() {
+      return this.brokerConnected && (this.role === 'host' ? Boolean(this.serverId) : this.joined);
     }
 
-    async acceptAnswer(text) {
-      if (this.role !== 'host') {
-        return;
-      }
-      const data = decodeSignal(text);
-      if (!data || data.kind !== 'answer' || !data.inviteId || !data.description) {
-        throw new Error('That answer code is not valid.');
-      }
-      const peer = this.peers.get(data.inviteId);
-      if (!peer) {
-        throw new Error('No pending invite matches that answer code.');
-      }
-      await peer.pc.setRemoteDescription(new RTCSessionDescription(data.description));
-      this.game.setNetworkStatus('Answer accepted. Waiting for the joiner connection to open...');
-      this.game.dom.hostAnswerInput.value = '';
+    setBrokerUrl(url) {
+      this.brokerUrl = url;
+      try { localStorage.setItem('build-and-learn-broker', url); } catch (error) { /* ignore */ }
     }
 
-    async generateAnswer(text) {
-      if (this.role !== 'client') {
-        return;
-      }
-      if (!this.rtcAvailable) {
-        throw new Error('WebRTC is unavailable in this browser.');
-      }
-      const data = decodeSignal(text);
-      if (!data || data.kind !== 'offer' || !data.description || !data.inviteId) {
-        throw new Error('That invite code is not valid.');
-      }
-
-      const connectionKey = data.inviteId;
-      const pc = new RTCPeerConnection(this.rtcConfig);
-      const peer = this.attachPeer(connectionKey, pc, null);
-      this.joinConnectionKey = connectionKey;
-
-      pc.ondatachannel = (event) => {
-        this.attachChannel(peer, event.channel);
-      };
-
-      await pc.setRemoteDescription(new RTCSessionDescription(data.description));
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      await waitForIceGatheringComplete(pc);
-
-      const signal = encodeSignal({
-        kind: 'answer',
-        inviteId: data.inviteId,
-        description: pc.localDescription
-      });
-
-      this.game.dom.joinAnswerOutput.value = signal;
-      this.game.setNetworkStatus('Answer ready. Send it back to the host, then wait for the connection to finish opening.');
-      return signal;
-    }
-
-    attachPeer(connectionKey, pc, channel) {
-      const peer = {
-        connectionKey,
-        pc,
-        channel,
-        playerId: null,
-        opened: false
-      };
-      this.peers.set(connectionKey, peer);
-
-      pc.addEventListener('connectionstatechange', () => {
-        const state = pc.connectionState;
-        if (state === 'failed' || state === 'closed' || state === 'disconnected') {
-          this.handlePeerClosed(peer);
+    // ---- shared connect ----
+    connectBroker(onReady) {
+      const t = this.topics();
+      const will = this.role === 'host' && this.serverId
+        ? { topic: t.lobby(this.serverId), payload: '', retain: true }
+        : null;
+      this.mqtt = new MiniMqtt(this.brokerUrl, {
+        clientId: `bnl-${this.role}-${Math.random().toString(16).slice(2, 8)}`,
+        keepalive: 30,
+        will,
+        onConnect: () => {
+          this.brokerConnected = true;
+          this.game.setNetworkStatus(`Connected to public server (${brokerLabel(this.brokerUrl)}).`);
+          this.game.updateSessionHeader();
+          if (onReady) onReady();
+        },
+        onMessage: (topic, payload) => this.onBrokerMessage(topic, payload),
+        onClose: () => {
+          this.brokerConnected = false;
+          this.game.setNetworkStatus('Lost the connection to the public server. Retrying…');
+          window.setTimeout(() => { if (!this.brokerConnected) this.connectBroker(onReady); }, 2500);
+        },
+        onError: () => {
+          this.game.setNetworkStatus(`Could not reach ${brokerLabel(this.brokerUrl)}. Try another server from the list.`);
         }
       });
-
-      if (channel) {
-        this.attachChannel(peer, channel);
-      }
-
-      return peer;
+      this.game.setNetworkStatus(`Connecting to public server (${brokerLabel(this.brokerUrl)})…`);
+      this.mqtt.connect();
     }
 
-    attachChannel(peer, channel) {
-      peer.channel = channel;
-      channel.addEventListener('open', () => {
-        peer.opened = true;
-        if (this.role === 'client') {
-          this.game.onConnectedToHost();
-          this.send(peer, {
-            type: 'hello',
-            player: {
-              id: this.game.localPlayerId,
-              name: this.game.localCharacter.name,
-              avatarPreset: this.game.localCharacter.avatarPreset
-            }
-          });
+    onBrokerMessage(topic, payload) {
+      const t = this.topics();
+      // Lobby announcements (client browser).
+      if (topic.startsWith(`${NET_REALM}/lobby/`)) {
+        const id = topic.slice(`${NET_REALM}/lobby/`.length);
+        if (!payload) {
+          this.serverList.delete(id);
         } else {
-          this.game.setNetworkStatus('Joiner connected. Waiting for their player data...');
+          try {
+            const meta = JSON.parse(payload);
+            meta.serverId = id;
+            meta.seenAt = Date.now();
+            this.serverList.set(id, meta);
+          } catch (error) { /* ignore malformed */ }
         }
-      });
-
-      channel.addEventListener('message', (event) => {
-        this.handleMessage(peer, event.data);
-      });
-
-      channel.addEventListener('close', () => {
-        this.handlePeerClosed(peer);
-      });
-    }
-
-    handlePeerClosed(peer) {
-      if (!this.peers.has(peer.connectionKey)) {
+        if (this.listChangeCb) this.listChangeCb(this.getServerList());
         return;
       }
-      this.peers.delete(peer.connectionKey);
-      if (this.role === 'client') {
-        this.gameplayReady = false;
-        this.game.setNetworkStatus('Disconnected from the host.');
-        this.game.updateSessionHeader();
-      } else if (peer.playerId) {
-        this.game.onPeerLeft(peer.playerId);
+      let msg;
+      try { msg = JSON.parse(payload); } catch (error) { return; }
+      if (this.role === 'host' && this.serverId && topic === t.up(this.serverId)) {
+        this.handleClientMessage(msg);
+      } else if (this.role === 'client' && this.serverId && topic === t.down(this.serverId)) {
+        this.handleHostMessage(msg);
       }
     }
 
-    handleMessage(peer, raw) {
-      let message;
-      try {
-        message = JSON.parse(raw);
-      } catch {
-        return;
-      }
-      if (this.role === 'host') {
-        this.handleHostMessage(peer, message);
-      } else if (this.role === 'client') {
-        this.handleClientMessage(peer, message);
-      }
+    // ================= HOST =================
+    startHosting(meta) {
+      this.serverId = `s${Math.random().toString(16).slice(2, 8)}`;
+      this.hostMeta = meta || {};
+      this.connectBroker(() => {
+        const t = this.topics();
+        this.mqtt.subscribe(t.up(this.serverId));
+        this.publishLobby();
+        this.heartbeatTimer = window.setInterval(() => this.publishLobby(), 4000);
+        this.pruneTimer = window.setInterval(() => this.prunePeers(), 3000);
+        this.game.setNetworkStatus(`Hosting "${this.hostMeta.name}" — friends can pick it from the server list.`);
+      });
     }
 
-    handleHostMessage(peer, message) {
-      if (message.type === 'hello') {
-        peer.playerId = message.player.id;
-        this.game.onPeerHello(peer.connectionKey, message.player);
-        return;
-      }
-      if (!peer.playerId) {
-        return;
-      }
-      if (message.type === 'input') {
-        this.game.applyRemoteInput(peer.playerId, message.input);
-      } else if (message.type === 'tool') {
-        this.game.applyRemoteToolUse(peer.playerId, message.action);
-      } else if (message.type === 'reset') {
-        this.game.applyRemoteReset(peer.playerId);
-      } else if (message.type === 'buy-vip') {
-        this.game.buyVipWeapon(message.weaponKey, true);
-      } else if (message.type === 'chat') {
-        const character = this.game.characters.get(peer.playerId);
-        if (!character) {
-          return;
+    publishLobby() {
+      if (!this.brokerConnected || !this.serverId) return;
+      const meta = {
+        name: this.hostMeta.name || 'Zombie Versus game',
+        host: this.hostMeta.host || 'Host',
+        players: this.game.characters ? this.game.characters.size : 1,
+        maxPlayers: 6,
+        phase: this.game.vs ? this.game.vs.phase : 'lobby',
+        map: this.hostMeta.map || 'Zombie Versus',
+        ts: Date.now()
+      };
+      this.mqtt.publish(this.topics().lobby(this.serverId), JSON.stringify(meta), true);
+    }
+
+    prunePeers() {
+      const now = Date.now();
+      for (const [id, info] of [...this.peers.entries()]) {
+        if (now - info.lastSeen > 9000) {
+          this.peers.delete(id);
+          this.game.onPeerLeft(id);
+          this.publishLobby();
         }
-        this.game.receiveRemoteSpeech(character.id, character.name, message.message);
-        this.broadcast({
-          type: 'chat',
-          playerId: character.id,
-          speaker: character.name,
-          message: message.message
-        }, peer.connectionKey);
       }
     }
 
-    handleClientMessage(peer, message) {
-      if (message.type === 'welcome') {
+    handleClientMessage(msg) {
+      const from = msg.from;
+      if (!from) return;
+      const peer = this.peers.get(from) || { lastSeen: 0 };
+      peer.lastSeen = Date.now();
+      this.peers.set(from, peer);
+      if (msg.type === 'hello') {
+        this.game.onPeerHello(from, msg.player);
+        this.publishLobby();
+      } else if (msg.type === 'input') {
+        this.game.applyRemoteInput(from, msg.input);
+      } else if (msg.type === 'tool') {
+        this.game.applyRemoteToolUse(from, msg.action);
+      } else if (msg.type === 'reset') {
+        this.game.applyRemoteReset(from);
+      } else if (msg.type === 'buy-vip') {
+        this.game.buyVipWeapon(msg.weaponKey, true);
+      } else if (msg.type === 'chat') {
+        const character = this.game.characters.get(from);
+        const speaker = character ? character.name : 'Player';
+        this.game.receiveRemoteSpeech(from, speaker, msg.message);
+        this.downPublish({ type: 'chat', playerId: from, speaker, message: msg.message });
+      } else if (msg.type === 'bye') {
+        this.peers.delete(from);
+        this.game.onPeerLeft(from);
+        this.publishLobby();
+      }
+    }
+
+    downPublish(obj) {
+      if (this.brokerConnected && this.serverId) {
+        this.mqtt.publish(this.topics().down(this.serverId), JSON.stringify(obj));
+      }
+    }
+
+    // ================= CLIENT =================
+    startBrowsing(onListChange) {
+      this.listChangeCb = onListChange;
+      this.connectBroker(() => {
+        this.mqtt.subscribe(this.topics().lobbyWild);
+        this.game.setNetworkStatus('Browsing the public server list — pick a game to join.');
+      });
+    }
+
+    getServerList() {
+      const now = Date.now();
+      return [...this.serverList.values()]
+        .filter((m) => now - (m.seenAt || 0) < 13000)
+        .sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    }
+
+    joinServer(serverId) {
+      if (!serverId) return;
+      this.serverId = serverId;
+      const t = this.topics();
+      this.mqtt.subscribe(t.down(serverId));
+      this.joined = true;
+      this.game.onConnectedToHost();
+      // Keep re-announcing until the host confirms us (guards against the hello or the
+      // one-shot welcome being dropped while subscriptions settle on the broker).
+      if (this.helloTimer) clearInterval(this.helloTimer);
+      let tries = 0;
+      const sayHello = () => {
+        this.upPublish({
+          type: 'hello',
+          player: {
+            id: this.game.localPlayerId,
+            name: this.game.localCharacter.name,
+            avatarPreset: this.game.localCharacter.avatarPreset
+          }
+        });
+        tries += 1;
+        if (this.gameplayReady || tries > 12) {
+          clearInterval(this.helloTimer);
+          this.helloTimer = null;
+        }
+      };
+      sayHello();
+      this.helloTimer = window.setInterval(sayHello, 1000);
+      this.game.setNetworkStatus('Joining the game… waiting for the host to spawn you in.');
+    }
+
+    upPublish(obj) {
+      if (!this.brokerConnected || !this.serverId) return;
+      obj.from = this.game.localPlayerId;
+      this.mqtt.publish(this.topics().up(this.serverId), JSON.stringify(obj));
+    }
+
+    handleHostMessage(msg) {
+      if (msg.type === 'welcome') {
+        if (msg.to && msg.to !== this.game.localPlayerId) return;
         this.gameplayReady = true;
-        this.game.onWelcomeFromHost(message.playerId);
-        return;
-      }
-      if (message.type === 'snapshot') {
-        this.game.applySnapshot(message.snapshot);
-        return;
-      }
-      if (message.type === 'chat') {
-        this.game.receiveRemoteSpeech(message.playerId, message.speaker, message.message);
-        return;
-      }
-      if (message.type === 'system-chat') {
-        this.game.receiveSystemChat(message.message);
+        this.game.onWelcomeFromHost(msg.playerId || this.game.localPlayerId);
+      } else if (msg.type === 'snapshot') {
+        this.game.applySnapshot(msg.snapshot);
+      } else if (msg.type === 'system-chat') {
+        this.game.receiveSystemChat(msg.message);
+      } else if (msg.type === 'chat') {
+        if (msg.except && msg.except === this.game.localPlayerId) return;
+        this.game.receiveRemoteSpeech(msg.playerId, msg.speaker, msg.message);
       }
     }
 
-    send(peer, payload) {
-      if (!peer || !peer.channel || peer.channel.readyState !== 'open') {
-        return;
-      }
-      peer.channel.send(JSON.stringify(payload));
-    }
-
-    broadcast(payload, exceptConnectionKey = null) {
-      for (const peer of this.peers.values()) {
-        if (exceptConnectionKey && peer.connectionKey === exceptConnectionKey) {
-          continue;
-        }
-        this.send(peer, payload);
-      }
-    }
+    // ================= game-facing API (same names as before) =================
+    isHostReady() { return this.role === 'host' && this.brokerConnected; }
 
     sendWelcome(connectionKey, playerId) {
-      const peer = this.peers.get(connectionKey);
-      this.send(peer, {
-        type: 'welcome',
-        playerId
-      });
+      this.downPublish({ type: 'welcome', to: connectionKey, playerId });
     }
 
     sendInput(input) {
-      if (this.role !== 'client' || !this.joinConnectionKey) {
-        return;
-      }
-      const peer = this.peers.get(this.joinConnectionKey);
-      this.send(peer, {
-        type: 'input',
-        input
-      });
+      if (this.role !== 'client') return;
+      this.upPublish({ type: 'input', input });
     }
 
     sendToolUse(action) {
-      if (this.role !== 'client' || !this.joinConnectionKey) {
-        return;
-      }
-      const peer = this.peers.get(this.joinConnectionKey);
-      this.send(peer, {
-        type: 'tool',
-        action
-      });
+      if (this.role !== 'client') return;
+      this.upPublish({ type: 'tool', action });
     }
 
     sendReset() {
-      if (this.role !== 'client' || !this.joinConnectionKey) {
-        return;
-      }
-      const peer = this.peers.get(this.joinConnectionKey);
-      this.send(peer, {
-        type: 'reset'
-      });
+      if (this.role !== 'client') return;
+      this.upPublish({ type: 'reset' });
     }
 
     sendVipPurchase(weaponKey) {
-      if (this.role !== 'client' || !this.joinConnectionKey) {
-        return;
-      }
-      const peer = this.peers.get(this.joinConnectionKey);
-      this.send(peer, {
-        type: 'buy-vip',
-        weaponKey
-      });
+      if (this.role !== 'client') return;
+      this.upPublish({ type: 'buy-vip', weaponKey });
     }
 
     sendChat(message) {
-      if (this.role !== 'client' || !this.joinConnectionKey) {
-        return;
-      }
-      const peer = this.peers.get(this.joinConnectionKey);
-      this.send(peer, {
-        type: 'chat',
-        message
-      });
+      if (this.role !== 'client') return;
+      this.upPublish({ type: 'chat', message });
     }
 
     broadcastChat(playerId, speaker, message, exceptConnectionKey = null) {
-      if (this.role !== 'host') {
-        return;
-      }
-      this.broadcast({
-        type: 'chat',
-        playerId,
-        speaker,
-        message
-      }, exceptConnectionKey);
+      if (this.role !== 'host') return;
+      this.downPublish({ type: 'chat', playerId, speaker, message, except: exceptConnectionKey });
     }
 
-    broadcastSystemChat(message, exceptConnectionKey = null) {
-      if (this.role !== 'host') {
-        return;
-      }
-      this.broadcast({
-        type: 'system-chat',
-        message
-      }, exceptConnectionKey);
+    broadcastSystemChat(message) {
+      if (this.role !== 'host') return;
+      this.downPublish({ type: 'system-chat', message });
     }
 
     broadcastSnapshot() {
-      if (this.role !== 'host') {
-        return;
-      }
-      this.broadcast({
-        type: 'snapshot',
-        snapshot: this.game.buildSnapshot()
-      });
+      if (this.role !== 'host' || !this.brokerConnected) return;
+      this.downPublish({ type: 'snapshot', snapshot: this.game.buildSnapshot() });
     }
+
+    leave() {
+      try {
+        if (this.role === 'client' && this.serverId) {
+          this.upPublish({ type: 'bye' });
+        }
+        if (this.role === 'host' && this.serverId && this.brokerConnected) {
+          // Clear our retained lobby entry so it vanishes from the list.
+          this.mqtt.publish(this.topics().lobby(this.serverId), '', true);
+        }
+        if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+        if (this.pruneTimer) clearInterval(this.pruneTimer);
+        if (this.mqtt) this.mqtt.end();
+      } catch (error) { /* ignore */ }
+    }
+  }
+
+  function brokerLabel(url) {
+    const found = PUBLIC_BROKERS.find((b) => b.url === url);
+    return found ? found.name : url;
   }
 
   class Renderer {
@@ -9240,7 +9563,13 @@ pickZombieSpawn() {
       ko: character.ko,
       wo: character.wo,
       selectedTool: character.selectedTool,
-      walkCycle: roundNetworkFloat(character.walkCycle)
+      walkCycle: roundNetworkFloat(character.walkCycle),
+      // Zombie Versus role/appearance so joiners render + behave correctly.
+      vsRole: character.vsRole || null,
+      vsClass: character.vsClass || null,
+      infected: Boolean(character.infected),
+      renderScale: character.renderScale || 1,
+      grounded: Boolean(character.grounded)
     };
   }
 
@@ -9495,71 +9824,6 @@ pickZombieSpawn() {
     return null;
   }
 
-  async function copyTextToClipboard(text) {
-    if (!text) {
-      return;
-    }
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      try {
-        await navigator.clipboard.writeText(text);
-        return;
-      } catch {
-        // fall through
-      }
-    }
-    const scratch = document.createElement('textarea');
-    scratch.value = text;
-    scratch.style.position = 'fixed';
-    scratch.style.opacity = '0';
-    document.body.appendChild(scratch);
-    scratch.select();
-    document.execCommand('copy');
-    scratch.remove();
-  }
-
-  function encodeSignal(payload) {
-    const bytes = new TextEncoder().encode(JSON.stringify(payload));
-    let binary = '';
-    for (const value of bytes) {
-      binary += String.fromCharCode(value);
-    }
-    return btoa(binary);
-  }
-
-  function decodeSignal(text) {
-    const trimmed = String(text || '').trim();
-    if (!trimmed) {
-      throw new Error('No code was provided.');
-    }
-
-    try {
-      const binary = atob(trimmed);
-      const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
-      return JSON.parse(new TextDecoder().decode(bytes));
-    } catch {
-      return JSON.parse(trimmed);
-    }
-  }
-
-  function waitForIceGatheringComplete(pc) {
-    return new Promise((resolve) => {
-      if (pc.iceGatheringState === 'complete') {
-        resolve();
-        return;
-      }
-      const done = () => {
-        if (pc.iceGatheringState === 'complete') {
-          pc.removeEventListener('icegatheringstatechange', done);
-          resolve();
-        }
-      };
-      pc.addEventListener('icegatheringstatechange', done);
-      window.setTimeout(() => {
-        pc.removeEventListener('icegatheringstatechange', done);
-        resolve();
-      }, 8000);
-    });
-  }
 
   function escapeHtml(value) {
     return String(value)

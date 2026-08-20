@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Build and Learn</title>
-  <link rel="stylesheet" href="styles.css?v=3">
+  <link rel="stylesheet" href="styles.css?v=5">
 </head>
 <body>
   <div id="game-shell">
@@ -145,41 +145,26 @@
         <div class="window-title">Online Multiplayer</div>
         <div id="network-role-line" class="network-role-line">Mode: Solo</div>
         <div id="network-status" class="network-status bevel-in">Offline</div>
+
+        <div class="network-actions network-broker-row">
+          <label class="network-label" for="broker-select">Public server</label>
+          <select id="broker-select" class="network-select"></select>
+        </div>
         <div class="network-copy">
-          This uses direct browser-to-browser WebRTC. There is no dedicated public game server, but wider internet mode may still use public STUN for address discovery.
+          Games run through a free public relay server — no invite codes, no router setup. Everyone must be on the same public server (above) to see each other.
         </div>
 
         <div id="host-controls" class="network-section hidden">
-          <button id="create-invite-button" class="chrome-button wide-button" type="button">Create Invite Code</button>
-          <label class="network-label" for="host-offer-output">Invite code</label>
-          <textarea id="host-offer-output" class="network-textarea" readonly></textarea>
-          <div class="network-actions">
-            <button id="copy-host-offer-button" class="chrome-button" type="button">Copy Invite</button>
-            <button id="clear-host-offer-button" class="chrome-button" type="button">Clear Invite</button>
-          </div>
-          <label class="network-label" for="host-answer-input">Paste joiner answer</label>
-          <textarea id="host-answer-input" class="network-textarea"></textarea>
-          <div class="network-actions">
-            <button id="complete-join-button" class="chrome-button" type="button">Complete Join</button>
-            <button id="clear-host-answer-button" class="chrome-button" type="button">Clear Answer</button>
-          </div>
-          <div class="network-label">Connected players</div>
+          <div class="network-label">You are hosting — players will appear here as they join:</div>
           <div id="connected-players" class="connected-players bevel-in">No one connected yet.</div>
         </div>
 
         <div id="join-controls" class="network-section hidden">
-          <label class="network-label" for="join-offer-input">Paste host invite</label>
-          <textarea id="join-offer-input" class="network-textarea"></textarea>
           <div class="network-actions">
-            <button id="generate-answer-button" class="chrome-button" type="button">Generate Answer</button>
-            <button id="clear-join-offer-button" class="chrome-button" type="button">Clear Invite</button>
+            <div class="network-label" style="flex:1">Server list — live games</div>
+            <button id="refresh-servers-button" class="chrome-button" type="button">Refresh</button>
           </div>
-          <label class="network-label" for="join-answer-output">Your answer code</label>
-          <textarea id="join-answer-output" class="network-textarea" readonly></textarea>
-          <div class="network-actions">
-            <button id="copy-join-answer-button" class="chrome-button" type="button">Copy Answer</button>
-            <button id="clear-join-answer-button" class="chrome-button" type="button">Clear Answer</button>
-          </div>
+          <div id="server-list" class="server-list bevel-in">Searching for games…</div>
         </div>
 
         <button id="close-network-button" class="chrome-button wide-button" type="button">Close</button>
@@ -233,10 +218,6 @@
             <div class="boot-label">Customize (one per slot)</div>
             <div id="custom-avatar-slots" class="custom-avatar-slots"></div>
           </div>
-          <label class="boot-toggle">
-            <input id="direct-mode-toggle" type="checkbox">
-            Strict direct mode: no public STUN, best for LAN/direct links only
-          </label>
 
           <div class="boot-label">Choose a Game</div>
           <div id="game-picker" class="game-picker">
@@ -258,7 +239,7 @@
             <button id="join-button" class="chrome-button wide-button" type="button">Join Online</button>
           </div>
           <div class="boot-note">
-            Play, host or edit the selected game. Host/Join uses manual private invite codes so no public game server is required.
+            Play, host or edit the selected game. Host Online lists your game on a free public server; Join Online shows a live server list you can click to join — no codes.
           </div>
           <button id="studio-button" class="chrome-button wide-button" type="button">🛠 Studio (Edit Selected Game)</button>
           <div class="boot-note">Studio lets you edit a throwaway copy of the selected game — models, stats, map and weapons. Nothing here changes the real game; save/load stays inside Studio.</div>
@@ -272,6 +253,6 @@
   </div>
 
   <script src="music-data.js?v=1"></script>
-  <script src="script.js?v=23"></script>
+  <script src="script.js?v=34"></script>
 </body>
 </html>

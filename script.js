@@ -859,6 +859,9 @@
     if (game && game.network && game.network.leave) {
       game.network.leave();
     }
+    if (game && game.stopBackgroundTicker) {
+      game.stopBackgroundTicker();
+    }
   });
 
   function simulateLoading() {
@@ -1252,9 +1255,21 @@ this.addCharacter(this.localPlayer);
       this.returnButton = button;
     }
 
+    stopBackgroundTicker() {
+      if (this.bgWorker) {
+        try { this.bgWorker.terminate(); } catch (error) { /* ignore */ }
+        this.bgWorker = null;
+      }
+      if (this.bgInterval) {
+        clearInterval(this.bgInterval);
+        this.bgInterval = null;
+      }
+    }
+
     returnToStudio() {
       // Cleanly tear the playtest down so Studio (and later sessions) work.
       this.running = false;
+      this.stopBackgroundTicker();
       this.fireHeld = false;
       if (this.audio) {
         this.audio.stopWalk();
@@ -1327,7 +1342,8 @@ this.addCharacter(this.localPlayer);
       this.audio.init();
       this.audio.playRespawn();
       this.lastFrame = performance.now();
-      requestAnimationFrame((timestamp) => this.frame(timestamp));
+      this.startBackgroundTicker();
+      requestAnimationFrame(() => this.frame());
     }
 
     applyLookDelta(deltaX, deltaY) {
@@ -2269,16 +2285,58 @@ allocatePlayerSpawn(index) {
       this.dom.canvas.addEventListener('contextmenu', (event) => event.preventDefault());
     }
 
-    frame(timestamp) {
+    frame() {
       if (!this.running) {
         return;
       }
-      const dt = Math.min((timestamp - this.lastFrame) / 1000, 1 / 24);
-      this.lastFrame = timestamp;
+      // While visible, the rAF loop drives the sim + render. While hidden, rAF is throttled
+      // to ~1fps by the browser, so the background worker ticker takes over (see stepOnce).
+      if (!document.hidden) {
+        this.stepOnce(true);
+      }
+      requestAnimationFrame(() => this.frame());
+    }
+
+    // One simulation step. dt is measured from a shared clock so rAF and the background
+    // worker ticker never double-advance time.
+    stepOnce(doRender) {
+      if (!this.running) {
+        return;
+      }
+      const now = performance.now();
+      const dt = Math.min((now - this.lastFrame) / 1000, 1 / 20);
+      if (dt <= 0) {
+        return;
+      }
+      this.lastFrame = now;
       this.time += dt;
       this.update(dt);
-      this.render();
-      requestAnimationFrame((nextTimestamp) => this.frame(nextTimestamp));
+      if (doRender) {
+        this.render();
+      }
+    }
+
+    // A Web Worker fires timer ticks that the browser does NOT throttle in a background
+    // tab, so a host keeps simulating + broadcasting at full speed even when it's not the
+    // focused tab. Falls back to setInterval if a worker can't be created (still helps).
+    startBackgroundTicker() {
+      const tick = () => {
+        if (this.running && document.hidden) {
+          this.stepOnce(false);
+        }
+      };
+      try {
+        const workerSource = 'let h=null;onmessage=function(e){if(e.data&&e.data.ms){if(h)clearInterval(h);h=setInterval(function(){postMessage(1);},e.data.ms);}};';
+        const blob = new Blob([workerSource], { type: 'application/javascript' });
+        const url = URL.createObjectURL(blob);
+        this.bgWorker = new Worker(url);
+        this.bgWorker.onmessage = tick;
+        this.bgWorker.postMessage({ ms: 1000 / 30 });
+      } catch (error) {
+        // file:// or CSP blocked the worker — fall back to a plain interval (throttled to
+        // ~1s in background by the browser, but better than a frozen host).
+        this.bgInterval = window.setInterval(tick, 1000 / 30);
+      }
     }
 
     update(dt) {
